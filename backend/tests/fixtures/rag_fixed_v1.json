@@ -1,0 +1,22 @@
+{
+  "dataset_version": "synthetic-v1",
+  "material_index_version": "synthetic-v1",
+  "model_config": "lexical-baseline",
+  "thresholds": {"recall_at_k": 0.75, "mrr": 0.5, "hit_rate": 0.75},
+  "materials": [
+    {"chunk_id": "cache-1", "material_id": "cache", "filename": "cache.md", "ordinal": 0, "text": "缓存击穿是热点 key 过期后大量请求同时访问数据库。"},
+    {"chunk_id": "cache-2", "material_id": "cache", "filename": "cache.md", "ordinal": 1, "text": "热点 key 可以通过互斥锁和逻辑过期控制重建。"},
+    {"chunk_id": "db-1", "material_id": "db", "filename": "database.md", "ordinal": 0, "text": "数据库事务隔离级别包括读已提交与可重复读。"},
+    {"chunk_id": "api-1", "material_id": "api", "filename": "api.md", "ordinal": 0, "text": "API timeout 表示请求超过配置的截止时间。"},
+    {"chunk_id": "api-2", "material_id": "api", "filename": "api.md", "ordinal": 1, "text": "API 超时后应取消下游调用并返回可重试错误。"},
+    {"chunk_id": "version-1", "material_id": "version", "filename": "version.md", "ordinal": 0, "text": "版本 1 使用 weighted 分数融合。"},
+    {"chunk_id": "version-2", "material_id": "version", "filename": "version.md", "ordinal": 1, "text": "版本 2 使用 RRF 分数融合。"}
+  ],
+  "cases": [
+    {"question": "什么是缓存击穿？", "expected_materials": ["cache"], "expected_chunks": ["cache-1"], "answer_points": ["热点 key 过期", "大量请求访问数据库"], "must_cite": true, "category": "synonym"},
+    {"question": "热点 key 过期以后怎么办？", "expected_materials": ["cache"], "expected_chunks": ["cache-2"], "answer_points": ["互斥锁", "逻辑过期"], "must_cite": true, "category": "cross_chunk"},
+    {"question": "API timeout 是什么意思？", "expected_materials": ["api"], "expected_chunks": ["api-1"], "answer_points": ["超过截止时间"], "must_cite": true, "category": "bilingual"},
+    {"question": "版本 2 使用什么融合？", "expected_materials": ["version"], "expected_chunks": ["version-2"], "answer_points": ["RRF"], "must_cite": true, "category": "version"},
+    {"question": "月球有多少缓存节点？", "expected_materials": [], "expected_chunks": [], "answer_points": [], "must_cite": false, "category": "unanswerable"}
+  ]
+}

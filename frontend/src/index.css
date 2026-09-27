@@ -1,8 +1,15 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* Prefer Apple's platform font metrics while keeping Chinese fallbacks stable. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --radius-control: 10px;
+  --radius-control-lg: 12px;
+  --radius-card: 14px;
+  --radius-sheet: 20px;
+  --radius-pill: 999px;
+  --ease-apple: cubic-bezier(0.22, 1, 0.36, 1);
   /* 默认值是深色。浅色只覆盖 :root[data-theme="light"]，避免两套 class。 */
   --color-canvas: #08080a;
   --color-rail: #0d0d0f;
@@ -16,6 +23,8 @@
   --color-status-ready-border: #2563eb;
   --color-status-ready-badge: #1d4ed8;
   --color-status-ready-text: #dbeafe;
+  --color-status-ready-action-hover: #2563eb;
+  --color-status-ready-action-pressed: #1e40af;
   --color-status-review-card: #2a171f;
   --color-status-review-border: #9f5b72;
   --color-status-review-badge: #8f435d;
@@ -41,6 +50,17 @@
   --color-foreground: #fafafa;
   --color-primary: #064e3b;
   --color-primary-foreground: #d1fae5;
+  --color-action: #34d399;
+  --color-action-hover: #6ee7b7;
+  --color-action-pressed: #22c88a;
+  --color-action-foreground: #04271a;
+  --color-action-soft: #123e2c;
+  --color-focus: #64d2ff;
+  --color-focus-soft: rgb(100 210 255 / 28%);
+  --color-input-active-surface: #111114;
+  --color-input-active-shadow: 0 3px 12px rgb(0 0 0 / 24%);
+  --color-surface-translucent: rgb(19 19 24 / 78%);
+  --color-shadow: rgb(0 0 0 / 36%);
   --color-muted: #18181b;
   --color-muted-foreground: #71717a;
   --color-border: #2e2e36;
@@ -69,6 +89,8 @@
   --color-status-ready-border: #93c5fd;
   --color-status-ready-badge: #2563eb;
   --color-status-ready-text: #eff6ff;
+  --color-status-ready-action-hover: #1d4ed8;
+  --color-status-ready-action-pressed: #1e40af;
   --color-status-review-card: #fff1f4;
   --color-status-review-border: #f0a3b8;
   --color-status-review-badge: #f8d7e0;
@@ -93,6 +115,17 @@
   --color-foreground: #18181b;
   --color-primary: #047857;
   --color-primary-foreground: #ffffff;
+  --color-action: #047857;
+  --color-action-hover: #066a4c;
+  --color-action-pressed: #045c42;
+  --color-action-foreground: #ffffff;
+  --color-action-soft: #e5f4ed;
+  --color-focus: #0066cc;
+  --color-focus-soft: rgb(0 102 204 / 20%);
+  --color-input-active-surface: #f0f0f2;
+  --color-input-active-shadow: 0 3px 12px rgb(15 23 42 / 10%);
+  --color-surface-translucent: rgb(255 255 255 / 82%);
+  --color-shadow: rgb(15 23 42 / 16%);
   --color-muted: #f4f4f5;
   --color-muted-foreground: #71717a;
   --color-border: #e4e4e7;
@@ -111,6 +144,7 @@ html,
 body,
 #root {
   height: 100%;
+  margin: 0;
   background: var(--color-canvas);
   color: var(--color-ink);
   font-family: var(--font-sans);
@@ -121,6 +155,31 @@ body,
     border-color 180ms cubic-bezier(0.16, 1, 0.3, 1);
   /* 主题脚本会改 html 的 color-scheme；这里给没跑脚本时的原生控件一个深色底。 */
   color-scheme: dark;
+}
+
+/* The theme menu uses a root view transition: the new theme is revealed as a
+   solid rectangle that travels from the left edge across the page. */
+@keyframes sage-theme-reveal-left {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-group(root) {
+    animation-duration: 420ms;
+  }
+  ::view-transition-image-pair(root) {
+    isolation: isolate;
+  }
+  ::view-transition-old(root) {
+    animation: none;
+  }
+  ::view-transition-new(root) {
+    animation: sage-theme-reveal-left 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
 }
 :root[data-theme="light"],
 :root[data-theme="light"] body {
@@ -159,6 +218,407 @@ textarea,
 input,
 select {
   font-family: inherit;
+}
+
+/* Shared interaction baseline: every native control responds on press and
+   exposes the same high-contrast keyboard ring without changing its layout. */
+button,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+button:not(:disabled) {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+button:focus-visible,
+a:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+}
+/* Text entry signals focus through its whole surface, keeping the border still
+   so the control feels focused without drawing a bright outline. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]):not([type="submit"]):not([type="reset"]):not([type="button"]):not([type="image"]):not([type="color"]),
+textarea {
+  transition:
+    background-color 180ms var(--ease-apple),
+    box-shadow 180ms var(--ease-apple);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]):not([type="submit"]):not([type="reset"]):not([type="button"]):not([type="image"]):not([type="color"]):not(.apple-input-no-dim):focus,
+textarea:not(.apple-input-no-dim):focus {
+  background-color: var(--color-input-active-surface);
+  outline: none;
+  box-shadow: var(--color-input-active-shadow);
+}
+.apple-input-shell {
+  transition:
+    background-color 180ms var(--ease-apple),
+    box-shadow 180ms var(--ease-apple);
+}
+.apple-input-shell:not(.apple-input-shell--no-dim):focus-within {
+  background-color: var(--color-input-active-surface);
+  box-shadow: var(--color-input-active-shadow);
+}
+.apple-input-shell input:focus,
+.apple-input-shell textarea:focus {
+  /* The wrapper owns the active tint; force the child transparent because the
+     global input selector intentionally has a higher specificity. */
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+button:not(:disabled):active {
+  transform: scale(0.98);
+  transition-duration: 90ms;
+}
+
+/* Apple material is reserved for floating chrome, where translucency clarifies
+   hierarchy without putting a blur layer behind every page section. */
+.apple-material {
+  border-color: color-mix(in srgb, var(--color-line-strong) 72%, transparent);
+  background: var(--color-surface-translucent);
+  box-shadow:
+    0 18px 42px var(--color-shadow),
+    inset 0 1px 0 rgb(255 255 255 / 7%);
+  backdrop-filter: blur(22px) saturate(150%);
+}
+.apple-dialog {
+  border-radius: var(--radius-sheet);
+}
+
+/* Shared button states keep color, radius, and press feedback consistent even
+   when a page uses the motion Button component instead of a page-specific CTA. */
+.apple-button {
+  border: 1px solid transparent;
+  border-radius: var(--radius-control-lg);
+  font-weight: 600;
+  letter-spacing: 0;
+  transition:
+    background-color 180ms var(--ease-apple),
+    border-color 180ms var(--ease-apple),
+    box-shadow 180ms var(--ease-apple),
+    color 180ms var(--ease-apple),
+    transform 120ms var(--ease-apple);
+}
+.apple-button:not(:disabled):hover {
+  box-shadow: 0 5px 14px var(--color-shadow);
+}
+.apple-button:not(:disabled):active {
+  transform: scale(0.97);
+  box-shadow: none;
+}
+.apple-button--primary {
+  background: var(--color-action);
+  color: var(--color-action-foreground);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--color-action) 24%, transparent);
+}
+.apple-button--primary:not(:disabled):hover {
+  background: var(--color-action-hover);
+}
+.apple-button--primary:not(:disabled):active {
+  background: var(--color-action-pressed);
+}
+.apple-button--ready {
+  border-color: var(--color-status-ready-border);
+  background: var(--color-status-ready-badge);
+  color: var(--color-status-ready-text);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--color-status-ready-badge) 28%, transparent);
+}
+.apple-button--ready:not(:disabled):hover {
+  border-color: var(--color-status-ready-action-hover);
+  background: var(--color-status-ready-action-hover);
+}
+.apple-button--ready:not(:disabled):active {
+  background: var(--color-status-ready-action-pressed);
+}
+.apple-button--secondary {
+  border-color: var(--color-line-strong);
+  background: var(--color-card);
+  color: var(--color-ink-2);
+}
+.apple-button--secondary:not(:disabled):hover {
+  border-color: var(--color-focus);
+  background: var(--color-elevated);
+}
+.apple-button--ghost {
+  color: var(--color-mute);
+}
+.apple-button--ghost:not(:disabled):hover {
+  background: var(--color-field);
+  color: var(--color-ink);
+}
+.apple-button--outline {
+  border-color: var(--color-line-strong);
+  background: transparent;
+  color: var(--color-ink-2);
+}
+.apple-button--outline:not(:disabled):hover {
+  border-color: var(--color-focus);
+  background: var(--color-field);
+}
+.apple-button--danger {
+  border-color: color-mix(in srgb, var(--color-danger) 44%, var(--color-line));
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.apple-button--sm {
+  height: 32px;
+  gap: 6px;
+  padding: 0 12px;
+  border-radius: var(--radius-control);
+  font-size: 12px;
+}
+.apple-button--md {
+  height: 40px;
+  gap: 8px;
+  padding: 0 18px;
+  border-radius: var(--radius-control-lg);
+  font-size: 14px;
+}
+.apple-button--lg {
+  height: 48px;
+  gap: 8px;
+  padding: 0 22px;
+  border-radius: var(--radius-card);
+  font-size: 16px;
+}
+.apple-button--icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--radius-control);
+}
+.apple-icon-button {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: var(--radius-control);
+  color: var(--color-dim);
+  transition:
+    background-color 180ms var(--ease-apple),
+    color 180ms var(--ease-apple),
+    transform 120ms var(--ease-apple);
+}
+.apple-icon-button:not(:disabled):hover {
+  background: var(--color-field);
+  color: var(--color-ink);
+}
+.apple-icon-button:not(:disabled):active {
+  transform: scale(0.94);
+}
+
+/* Form controls share the same optical corner and focus treatment as buttons. */
+.admin-input,
+.ui-select-trigger {
+  border-radius: var(--radius-control);
+  transition:
+    background-color 180ms var(--ease-apple),
+    border-color 180ms var(--ease-apple),
+    box-shadow 180ms var(--ease-apple),
+    color 180ms var(--ease-apple);
+}
+.ui-select-trigger:focus-visible {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px var(--color-focus-soft);
+}
+.ui-select-trigger svg {
+  transition: transform 180ms var(--ease-apple), color 180ms var(--ease-apple);
+}
+.ui-select-menu {
+  border-radius: var(--radius-control-lg);
+  box-shadow: 0 16px 36px var(--color-shadow);
+  backdrop-filter: blur(18px) saturate(145%);
+}
+.ui-select-option {
+  min-height: 32px;
+  border-radius: 8px;
+  transition: background-color 150ms var(--ease-apple), color 150ms var(--ease-apple);
+}
+.ui-select-option:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+/* Lower chrome should feel attached to the canvas instead of being another
+   opaque block in the hierarchy. Structural rails opt in explicitly. */
+.apple-sidebar {
+  background: var(--color-surface-translucent);
+  backdrop-filter: blur(24px) saturate(145%);
+  transition: background-color 180ms var(--ease-apple), border-color 180ms var(--ease-apple);
+}
+
+/* Admin surfaces use one quiet depth step so related tools read as a single workspace. */
+.admin-card {
+  border-color: color-mix(in srgb, var(--color-line) 86%, var(--color-line-strong));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 3%);
+  transition: border-color 180ms var(--ease-apple), box-shadow 180ms var(--ease-apple), background-color 180ms var(--ease-apple);
+}
+.admin-card:hover {
+  border-color: color-mix(in srgb, var(--color-line-strong) 76%, var(--color-focus));
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%), inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+/* High-frequency admin actions share a 32px hit target and immediate press feedback. */
+.admin-action {
+  min-height: 32px;
+  border-radius: var(--radius-control);
+  transition: background-color 180ms var(--ease-apple), border-color 180ms var(--ease-apple), box-shadow 180ms var(--ease-apple), color 180ms var(--ease-apple), transform 120ms var(--ease-apple);
+}
+.admin-action:not(:disabled):hover { box-shadow: 0 4px 12px rgb(0 0 0 / 18%); }
+.admin-action:not(:disabled):active { transform: scale(0.97); box-shadow: none; }
+.admin-action:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+/* The active rail item is a material chip anchored in the sidebar. */
+.admin-nav-item {
+  border: 1px solid transparent;
+  transition: background-color 180ms var(--ease-apple), border-color 180ms var(--ease-apple), color 180ms var(--ease-apple), transform 120ms var(--ease-apple);
+}
+.admin-nav-item:hover,
+.admin-nav-item:not(.admin-nav-item--active):hover {
+  /* Hover uses the same gray surface as selection so the rail does not jump
+     between unrelated colors when the pointer crosses items. */
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-rail)) !important;
+  border-color: var(--color-line-strong) !important;
+  border-radius: var(--radius-control-lg) !important;
+  color: var(--color-ink-2);
+}
+.admin-nav-item:active { transform: scale(0.98); }
+.admin-nav-item--active {
+  /* Blend gray into both themes; the light theme's field token is pure white. */
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-rail)) !important;
+  border-color: var(--color-line-strong) !important;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+}
+.admin-nav-item:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+/* Shared gray selection surface for admin navigation and user session history. */
+.sidebar-state-active {
+  border: 1px solid var(--color-line-strong) !important;
+  border-radius: var(--radius-control-lg) !important;
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-rail)) !important;
+}
+.sidebar-state-active:hover {
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-rail)) !important;
+}
+
+/* Kimi-style rail feedback keeps hover and selection neutral, so state is
+   visible without competing with the page's green action color. */
+.user-session-link:hover { background: transparent; }
+.user-session-link,
+.user-session-link span,
+.user-session-link + button,
+.group {
+  /* The theme transition captures the root as an image; keeping history rows
+     out of that capture prevents their labels from being painted twice. */
+  view-transition-name: none;
+  transition-property: none;
+}
+.group:hover {
+  /* History rows share the exact same neutral hover surface as active rails. */
+  border-color: var(--color-line-strong) !important;
+  border-radius: var(--radius-control-lg) !important;
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-rail)) !important;
+}
+
+/* Theme changes should reveal the new palette without interpolating text color. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+.group:hover .user-session-link {
+  color: var(--color-ink-2);
+  transition: none;
+}
+.group:has(.user-session-link:focus-visible) {
+  border-color: var(--color-line-strong);
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-rail));
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .apple-material,
+  .apple-sidebar,
+  .ui-select-menu {
+    background: var(--color-elevated);
+    backdrop-filter: none;
+    box-shadow: 0 8px 20px var(--color-shadow);
+  }
+}
+
+@media (prefers-contrast: more) {
+  .apple-material,
+  .apple-sidebar,
+  .ui-select-menu,
+  .admin-input,
+  .ui-select-trigger {
+    border-color: var(--color-line-strong);
+  }
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline-width: 3px;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Keep state changes visible while removing movement and elastic feedback. */
+  .apple-button,
+  .apple-icon-button,
+  .admin-input,
+  .ui-select-trigger,
+  .ui-select-trigger svg,
+  .ui-select-option,
+  .apple-sidebar {
+    transition-duration: 80ms;
+  }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]):not([type="submit"]):not([type="reset"]):not([type="button"]):not([type="image"]):not([type="color"]):not(.apple-input-no-dim),
+  textarea:not(.apple-input-no-dim),
+  .apple-input-shell {
+    transition-duration: 80ms;
+  }
+  button:not(:disabled):active,
+  .apple-button:not(:disabled):active,
+  .apple-icon-button:not(:disabled):active {
+    transform: none;
+  }
+}
+
+@media (max-width: 720px) {
+  /* Keep a compact navigation rail on phones; AppShell controls whether its
+     expanded history view is available, while admin labels collapse visually. */
+  .apple-sidebar[aria-label="管理控制台"] {
+    width: 56px !important;
+    padding-inline: 8px;
+  }
+  .apple-sidebar[aria-label="管理控制台"] {
+    font-size: 0;
+  }
+  .apple-sidebar[aria-label="管理控制台"] > div:first-child > div:first-child {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .apple-sidebar[aria-label="管理控制台"] nav a {
+    justify-content: center;
+    padding-inline: 0;
+    font-size: 0;
+  }
+  .apple-sidebar[aria-label="管理控制台"] nav a svg {
+    flex: none;
+  }
+  .apple-sidebar[aria-label="管理控制台"] > div:last-child {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .apple-sidebar[aria-label="管理控制台"] > div:last-child > div:first-child {
+    display: none;
+  }
 }
 
 /* 会话回答的 Markdown 预览，贴着现有暗色字色，不另起一套排版。 */
@@ -511,7 +971,7 @@ select {
 .admin-input {
   height: 32px;
   width: 100%;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--color-field-line);
   background: var(--color-field);
   padding: 0 10px;
@@ -522,7 +982,7 @@ select {
   color-scheme: inherit;
 }
 .admin-input:focus {
-  border-color: var(--color-forest-2);
+  border-color: var(--color-field-line);
 }
 .admin-input option {
   background: var(--color-field);
@@ -549,7 +1009,7 @@ select.admin-input {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   border: 1px solid var(--color-field-line);
   background: var(--color-field);
   padding: 0 10px;
@@ -559,7 +1019,8 @@ select.admin-input {
   outline: none;
 }
 .ui-select-trigger:focus-visible {
-  border-color: var(--color-forest-2);
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px var(--color-focus-soft);
 }
 .ui-select-trigger:disabled {
   cursor: not-allowed;
@@ -572,10 +1033,12 @@ select.admin-input {
   max-height: 12rem;
   width: 100%;
   overflow-y: auto;
-  border-radius: 8px;
+  border-radius: var(--radius-control-lg);
   border: 1px solid var(--color-line);
   background: var(--color-elevated);
   padding: 4px;
+  box-shadow: 0 16px 36px var(--color-shadow);
+  backdrop-filter: blur(18px) saturate(145%);
 }
 /* 底边分页条没有向下的空间，菜单改挂在触发器上方。 */
 .ui-select-menu.is-top {
@@ -635,11 +1098,17 @@ select.admin-input {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-radius: 6px;
+  min-height: 32px;
+  border-radius: 8px;
   padding: 6px 8px;
   text-align: left;
   font-size: 11px;
   color: var(--color-ink-2);
+  transition: background-color 150ms var(--ease-apple), color 150ms var(--ease-apple);
+}
+.ui-select-option:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
 }
 .ui-select-option:hover,
 .ui-select-option[data-active="true"] {
@@ -659,3 +1128,161 @@ select.admin-input {
   color: var(--color-dim);
 }
 
+/* RAG material selection control: one visual layer, native semantics underneath. */
+.rag-checkbox-control {
+  position: relative;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.rag-checkbox-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+.rag-checkbox-box {
+  position: relative;
+  display: block;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 4px;
+  background: var(--color-field);
+  box-shadow: inset 0 0 0 0 var(--color-forest);
+  transition: background-color 140ms var(--ease-apple), border-color 140ms var(--ease-apple), box-shadow 140ms var(--ease-apple), transform 100ms var(--ease-apple);
+}
+.rag-checkbox-control:active .rag-checkbox-box { transform: scale(0.9); }
+.rag-checkbox-input:focus-visible + .rag-checkbox-box { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.rag-checkbox-input:checked + .rag-checkbox-box,
+.rag-checkbox-input:indeterminate + .rag-checkbox-box {
+  border-color: var(--color-forest-2);
+  background: var(--color-forest);
+  box-shadow: inset 0 0 0 1px var(--color-forest-2);
+}
+.rag-checkbox-input:checked + .rag-checkbox-box::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  display: block;
+  width: 7px;
+  height: 4px;
+  border-bottom: 2px solid var(--color-mint-2);
+  border-left: 2px solid var(--color-mint-2);
+  content: "";
+  transform: rotate(-45deg) scaleX(0);
+  transform-origin: left bottom;
+  animation: rag-checkbox-draw 180ms var(--ease-apple) forwards;
+}
+.rag-checkbox-input:indeterminate + .rag-checkbox-box::after {
+  position: absolute;
+  top: 6px;
+  left: 3px;
+  display: block;
+  width: 7px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-mint-2);
+  content: "";
+}
+.rag-checkbox-control.is-disabled { cursor: not-allowed; opacity: 0.4; }
+@keyframes rag-checkbox-draw {
+  from { transform: rotate(-45deg) scaleX(0); }
+  to { transform: rotate(-45deg) scaleX(1); }
+}
+
+/* Keep the mounted panel animatable: it separates from the trigger with a
+   short spring-like scale/translate, while the items arrive in a readable
+   stagger. The placement class mirrors the motion when the panel opens upward. */
+.ui-select-menu {
+  opacity: 1;
+  transform: translateY(0) scaleY(1);
+  transform-origin: top center;
+  transition: opacity 180ms var(--ease-apple), transform 180ms var(--ease-apple);
+  will-change: opacity, transform;
+}
+.ui-select-menu.is-top { transform-origin: bottom center; }
+.ui-select-menu[data-state="open"] {
+  animation: ui-select-panel-in 360ms cubic-bezier(0.22, 1.18, 0.36, 1) both;
+}
+.ui-select-menu[data-state="closed"] {
+  animation: ui-select-panel-out 180ms var(--ease-apple) both;
+}
+.ui-select-menu[data-state="closed"] {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-5px) scaleY(0.94);
+}
+.ui-select-menu.is-top[data-state="closed"] { transform: translateY(5px) scaleY(0.94); }
+/* Keep long option lists scrollable without exposing a transient scrollbar
+   while the panel is scaling during its open/close animation. */
+.ui-select-menu {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.ui-select-menu::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+.ui-select-menu[data-state="open"] .ui-select-option {
+  animation: ui-select-item-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(45ms + (var(--select-item-index, 0) * 28ms));
+}
+.ui-select-menu.is-top[data-state="open"] .ui-select-option {
+  animation-name: ui-select-item-in-top;
+}
+@keyframes ui-select-panel-in {
+  from { opacity: 0; transform: translateY(-5px) scaleY(0.94); }
+  to { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+@keyframes ui-select-panel-out {
+  from { opacity: 1; transform: translateY(0) scaleY(1); }
+  to { opacity: 0; transform: translateY(-5px) scaleY(0.94); }
+}
+@keyframes ui-select-panel-out-top {
+  from { opacity: 1; transform: translateY(0) scaleY(1); }
+  to { opacity: 0; transform: translateY(5px) scaleY(0.94); }
+}
+.ui-select-menu.is-top[data-state="closed"] { animation-name: ui-select-panel-out-top; }
+@keyframes ui-select-item-in {
+  from { opacity: 0; transform: translateY(-5px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes ui-select-item-in-top {
+  from { opacity: 0; transform: translateY(5px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.paged-list {
+  animation-duration: 220ms;
+  animation-timing-function: var(--ease-apple);
+  animation-fill-mode: both;
+}
+.paged-list--next { animation-name: paged-list-in-left; }
+.paged-list--prev { animation-name: paged-list-in-right; }
+@keyframes paged-list-in-left {
+  from { opacity: 0; transform: translateX(14px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes paged-list-in-right {
+  from { opacity: 0; transform: translateX(-14px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rag-checkbox-box,
+  .ui-select-menu,
+  .ui-select-menu[data-state="open"] .ui-select-option {
+    animation: none;
+    transition: none;
+  }
+  .paged-list { animation: none; }
+  .rag-checkbox-input:checked + .rag-checkbox-box::after { animation: none; transform: rotate(-45deg) scaleX(1); }
+}

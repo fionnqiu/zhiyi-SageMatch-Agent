@@ -14,7 +14,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { EASE_OUT, SPRING_PRESS } from "../../../lib/ease";
+import { EASE_OUT, SPRING_PRESS } from "../../../lib/appearance/ease";
 import { useHoverCapable } from "../../../lib/hooks/use-hover-capable";
 import { cn } from "../../../lib/utils";
 
@@ -65,7 +65,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     {
       variant = "primary",
       size = "md",
-      pressScale = 0.93,
+      pressScale = 0.97,
       ripple = false,
       className,
       children,
@@ -105,10 +105,15 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         type="button"
         whileTap={reduce ? undefined : { scale: pressScale }}
-        whileHover={reduce || !canHover ? undefined : { scale: 1.02 }}
+        whileHover={reduce || !canHover ? undefined : { scale: 1.01 }}
         transition={SPRING_PRESS}
         onPointerDown={handlePointerDown}
         className={cn(
+          // Semantic classes let the global Apple surface styles target every
+          // shared button while preserving the existing Tailwind API.
+          "apple-button",
+          `apple-button--${variant}`,
+          `apple-button--${size}`,
           "inline-flex items-center justify-center font-medium select-none",
           "transition-colors",
           "disabled:pointer-events-none disabled:opacity-50",
@@ -157,7 +162,7 @@ export const ButtonLink = forwardRef<HTMLAnchorElement, ButtonLinkProps>(
     {
       variant = "primary",
       size = "md",
-      pressScale = 0.93,
+      pressScale = 0.97,
       className,
       children,
       ...rest
@@ -171,9 +176,14 @@ export const ButtonLink = forwardRef<HTMLAnchorElement, ButtonLinkProps>(
       <motion.a
         ref={ref}
         whileTap={reduce ? undefined : { scale: pressScale }}
-        whileHover={reduce || !canHover ? undefined : { scale: 1.02 }}
+        whileHover={reduce || !canHover ? undefined : { scale: 1.01 }}
         transition={SPRING_PRESS}
         className={cn(
+          // Keep links on the same semantic button surface contract as buttons
+          // so global focus, radius, and motion rules remain consistent.
+          "apple-button",
+          `apple-button--${variant}`,
+          `apple-button--${size}`,
           "inline-flex items-center justify-center font-medium select-none",
           "transition-colors",
           VARIANT_CLASS[variant],

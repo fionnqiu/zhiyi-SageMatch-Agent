@@ -1,1 +1,1 @@
-"""HTTP routers, one module per business area."""
+"""HTTP routers grouped into chat, interview, admin, and shared packages."""

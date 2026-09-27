@@ -19,14 +19,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { EASE_OUT } from "../../lib/ease";
+import { EASE_OUT } from "../../lib/appearance/ease";
 import { cn } from "../../lib/utils";
 
 const INSTANT_TRANSITION: Transition = { duration: 0 };
 
-// Spring with bounce powers the unfold/separation; per-property timings in the
-// content choreograph it (see SelectContent). Mirrors bouncy-accordion's feel.
-const CHEVRON_TRANSITION: Transition = { type: "spring", duration: 0.4, bounce: 0.3 };
+// A select is a precision control rather than a momentum gesture, so its
+// chevron settles critically with no decorative rebound.
+const CHEVRON_TRANSITION: Transition = { type: "spring", duration: 0.32, bounce: 0 };
 
 const LIST_VARIANTS: Variants = {
   hidden: {},
@@ -316,8 +316,8 @@ export function SelectContent({ className, children }: SelectContentProps) {
   const nearRadius = open ? 12 : 0;
 
   const gapT: Transition = open
-    ? { type: "spring", duration: 0.6, bounce: 0.5, delay: 0.12 }
-    : { type: "spring", duration: 0.3, bounce: 0.1 };
+    ? { type: "spring", duration: 0.42, bounce: 0, delay: 0.08 }
+    : { type: "spring", duration: 0.26, bounce: 0 };
   const radiusT: Transition = open
     ? { duration: 0.3, ease: EASE_OUT, delay: 0.14 }
     : { duration: 0.16, ease: EASE_OUT };
@@ -357,7 +357,7 @@ export function SelectContent({ className, children }: SelectContentProps) {
                 ? { duration: 0.18 }
                 : { duration: 0.16, delay: 0.12 },
               height: open
-                ? { type: "spring", duration: 0.42, bounce: 0.14 }
+                ? { type: "spring", duration: 0.36, bounce: 0 }
                 : { duration: 0.26, ease: EASE_OUT, delay: 0.14 },
               marginTop: isTop ? INSTANT_TRANSITION : gapT,
               marginBottom: isTop ? gapT : INSTANT_TRANSITION,

@@ -1,8 +1,8 @@
 """API shapes grouped by business, re-exported so routers can still use app.schemas."""
 
-from app.schemas.audit import AuditLogOut, LlmCallLogOut
-from app.schemas.eval import EvalQuestionIn, EvalRunOut, EvalScoreIn
-from app.schemas.interview import (
+from app.schemas.admin.audit import AuditLogOut, LlmCallLogOut
+from app.schemas.admin.eval import EvalQuestionIn, EvalRunOut, EvalScoreIn
+from app.schemas.business.interview import (
     InterviewAnswerIn,
     InterviewCreateIn,
     InterviewDetail,
@@ -14,8 +14,8 @@ from app.schemas.interview import (
     ReportIssue,
     ReportOut,
 )
-from app.schemas.knowledge import ChunkOut, MaterialDetail, MaterialOut, RecallHit, RecallOut
-from app.schemas.providers import (
+from app.schemas.admin.knowledge import ChunkOut, MaterialDetail, MaterialOut, RecallHit, RecallOut
+from app.schemas.admin.providers import (
     AdminOverview,
     ProviderIn,
     ProviderOut,
@@ -23,7 +23,7 @@ from app.schemas.providers import (
     RoleBindingIn,
     RoleBindingOut,
 )
-from app.schemas.session import ChatMessageOut, ChatSendIn, ChatSessionDetail, ChatSessionOut
+from app.schemas.business.session import ChatMessageOut, ChatSendIn, ChatSessionDetail, ChatSessionOut
 
 __all__ = [
     "AdminOverview",

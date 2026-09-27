@@ -1,6 +1,5 @@
-# SageMatch RAG 数值参数（后端权威源，不进管理端）。
+# SageMatch RAG tuning parameters. Model connections live in the repo-root .env.
 # 路径：backend/config/rag.yaml。改完后重启 uvicorn 才会生效。
-# embedding / rerank 先占位，词法召回仍走 recall 段。
 
 chunk:
   # 切分窗口，单位 token：一个英文单词 / 一串数字 / 一个汉字 / 一处标点各算 1 token
@@ -10,31 +9,50 @@ chunk:
 recall:
   # 返回条数
   top_k: 10
+  fusion: weighted
+  lexical_weight: 0.35
+  lexical_top_k: 40
+  vector_top_k: 40
+  candidate_k: 40
+  max_chunks_per_material: 4
+  max_materials: 8
+  merge_adjacent: true
   # 低于此分的 chunk 直接丢掉
   score_floor: 0.0
   # Query 整句出现在 chunk 里时的加分，总分仍封顶 1.0
   exact_match_bonus: 0.35
 
+# 证据上下文预算。知识库里的 chunk 是整节切分，单个块可达约 5400 字符、
+# 8 条合计约 6500 token；预算低于此会让 build_context 裁剪文本并把
+# context_truncated 记进 fallback_reasons，六阶段评测器会把它判为降级而中止。
+# 这里留出余量，仍保留有界上限（超限时由 _clip_to_tokens 兜底裁剪）。
+context:
+  max_chunks: 8
+  max_tokens: 12000
+  max_chunk_chars: 8000
+  include_source_id: true
+
 generation:
-  # 角色表没绑温度时用这里；有绑定时角色温度优先
+  # The role binding's temperature wins when present.
   temperature: 0.7
-  # 核采样。1.0 = 不截断
   top_p: 1.0
   max_tokens: 900
 
 embedding:
-  # 向量模型不走管理端角色。模型、地址、密钥都写在这里；密钥留空则只做词法切块。
-  # 维度必须保持 1024。千问可用 text-embedding-v3（不要用对话模型，例如 qwen3.8-flash）。
-  enabled: true
-  model: "qwen3.7-text-embedding-flash"
-  base_url: "https://maas.qianwenaiapi.com/compatible-mode/v1"
-  api_key: "sk-ws-H.PIXXHXE.XegJ.MEUCIQCNMURbdPtzVfDakpqr_eh_6t6bIlySZToTKOrwANDnBAIgdb2ULXIXjnVqqZzlwe4FDe1nKvDiW7bnpSQf7z_pk3Y"
   dimensions: 1024
   batch_size: 32
   similarity: cosine
-  # 向量分与词法分混合：vector * (1-w) + lexical * w
   lexical_weight: 0.35
 
 rerank:
-  enabled: false
   top_n: 20
+  timeout_seconds: 8.0
+  batch_size: 16
+  fail_open: true
+
+# 推理模型的改写请求可能包含较长 reasoning_tokens；8 秒会把偶发超时
+# 记录为 rewrite_failed，评测器随后按 fail-closed 规则停止整次运行。
+query_rewrite:
+  timeout_seconds: 20.0
+  max_queries: 3
+  max_query_chars: 2000

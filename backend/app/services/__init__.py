@@ -1,9 +1,9 @@
 """Business services, re-exported so routers keep the old services.* call sites."""
 
-from app.services.audit import list_audit_logs, list_call_logs
-from app.services.common import mask_key
-from app.services.eval import list_eval_runs, run_question_eval, run_score_eval
-from app.services.interview import (
+from app.services.operations.audit import list_audit_logs, list_call_logs
+from app.services.shared.common import mask_key
+from app.services.interviews.eval import list_eval_runs, run_question_eval, run_score_eval
+from app.services.interviews.interview import (
     answer_interview,
     current_question,
     abandon_interview,
@@ -13,13 +13,17 @@ from app.services.interview import (
     finish_interview,
     get_interview,
     list_interviews,
+    pending_answer_run_id,
     prepare_interview,
     regenerate_report,
     resume_or_start,
     schedule_report,
+    start_report_worker,
+    stop_report_worker,
     start_interview,
+    find_interview_create_replay,
 )
-from app.services.knowledge import (
+from app.services.materials.knowledge import (
     accept_material,
     delete_material,
     enqueue_material_id,
@@ -29,8 +33,8 @@ from app.services.knowledge import (
     recall,
     start_material_worker,
 )
-from app.services.overview import admin_overview
-from app.services.providers import (
+from app.services.operations.overview import admin_overview
+from app.services.operations.providers import (
     create_provider,
     delete_provider,
     list_providers,
@@ -41,27 +45,33 @@ from app.services.providers import (
     update_provider,
     update_role,
 )
-from app.services.session import (
+from app.services.chat.session import (
     begin_chat,
-    chat_stream_mode,
     clear_session,
     complete_chat_turn,
     create_session,
     delete_session,
+    discard_redirect_turn,
     finish_chat,
     get_session,
     iter_turn_parts,
     prepare_chat_file,
     list_sessions,
     send_chat,
+    send_chat_graph,
+    route_chat,
+    recover_chat_turn,
+    staged_chat_retrieval_callbacks,
+    validate_stream_answer,
+    repair_stream_answer,
 )
 
 __all__ = [
     "accept_material",
     "admin_overview",
     "answer_interview",
+    "pending_answer_run_id",
     "begin_chat",
-    "chat_stream_mode",
     "clear_session",
     "complete_chat_turn",
     "create_provider",
@@ -71,6 +81,7 @@ __all__ = [
     "delete_material",
     "delete_provider",
     "delete_session",
+    "discard_redirect_turn",
     "end_interview",
     "enqueue_material_id",
     "finish_chat",
@@ -98,9 +109,18 @@ __all__ = [
     "run_question_eval",
     "run_score_eval",
     "schedule_report",
+    "start_report_worker",
+    "stop_report_worker",
     "seed_providers",
     "send_chat",
+    "send_chat_graph",
+    "route_chat",
+    "recover_chat_turn",
+    "staged_chat_retrieval_callbacks",
+    "validate_stream_answer",
+    "repair_stream_answer",
     "start_interview",
+    "find_interview_create_replay",
     "start_material_worker",
     "update_provider",
     "update_role",

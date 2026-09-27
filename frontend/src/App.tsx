@@ -1,16 +1,16 @@
 import { Navigate, Route, Routes } from "react-router-dom";
-import { AppShell } from "./layout/AppShell";
-import { AdminShell } from "./layout/AdminShell";
-import { SessionPage } from "./features/session/SessionPage";
-import { InterviewHubPage } from "./features/interview/InterviewHubPage";
-import { InterviewCreatePage } from "./features/interview/InterviewCreatePage";
-import { InterviewLivePage } from "./features/interview/InterviewLivePage";
-import { InterviewReportPage } from "./features/interview/InterviewReportPage";
-import { AdminProvidersPage } from "./features/admin/AdminProvidersPage";
-import { AdminMaterialsPage } from "./features/admin/AdminMaterialsPage";
-import { AdminRecallPage } from "./features/admin/AdminRecallPage";
-import { AdminEvalPage } from "./features/admin/AdminEvalPage";
-import { AdminAuditPage } from "./features/admin/AdminAuditPage";
+import { AppShell } from "./layout/shells/AppShell";
+import { AdminShell } from "./layout/shells/AdminShell";
+import { SessionPage } from "./features/session/pages/SessionPage";
+import { InterviewHubPage } from "./features/interview/pages/InterviewHubPage";
+import { InterviewCreatePage } from "./features/interview/pages/InterviewCreatePage";
+import { InterviewLivePage } from "./features/interview/pages/InterviewLivePage";
+import { InterviewReportPage } from "./features/interview/pages/InterviewReportPage";
+import { AdminProvidersPage } from "./features/admin/providers/AdminProvidersPage";
+import { AdminMaterialsPage } from "./features/admin/materials/AdminMaterialsPage";
+import { AdminRecallPage } from "./features/admin/recall/AdminRecallPage";
+import { AdminEvalPage } from "./features/admin/eval/AdminEvalPage";
+import { AdminAuditPage } from "./features/admin/audit/AdminAuditPage";
 
 export default function App() {
   return (

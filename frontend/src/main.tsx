@@ -2,8 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
-import { ToastHost } from "./components/ToastHost";
-import { applyTheme, readTheme } from "./lib/theme";
+import { ToastHost } from "./components/feedback/ToastHost";
+import { applyTheme, readTheme } from "./lib/appearance/theme";
 import "./index.css";
 
 // CSS 加载前先落主题，避免浅色用户先闪一帧深色。

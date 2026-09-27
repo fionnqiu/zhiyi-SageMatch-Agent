@@ -18,7 +18,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { usePopoverPortalPosition } from "./popover-position";
-import { EASE_OUT, SPRING_PANEL } from "../../lib/ease";
+import { EASE_OUT, SPRING_PANEL } from "../../lib/appearance/ease";
 import { cn } from "../../lib/utils";
 
 type Side = "top" | "bottom";
@@ -303,7 +303,7 @@ export function MorphPopoverContent({
             variants={clip}
             style={{ borderRadius: radius }}
             className={cn(
-              "overflow-hidden border border-border bg-background",
+              "apple-material overflow-hidden border border-border bg-background",
               className,
             )}
           >
