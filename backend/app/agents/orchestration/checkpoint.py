@@ -17,6 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
 from app.models.platform.runtime import GraphCheckpointOwner
@@ -426,6 +427,77 @@ def checkpoint_config(*, thread_id: str, owner_id: str | None = None, tenant_id:
     if tenant_id:
         configurable["tenant_id"] = tenant_id
     return {"configurable": configurable}
+
+
+def delete_session_checkpoints(
+    db: Session, session_id: str, *, owner_id: str, interview_ids: list[str] | None = None,
+    checkpointer: Any | None = None,
+) -> int:
+    """Remove checkpoint payloads and owner bindings in the business transaction.
+
+    The PostgreSQL saver has no synchronous bulk-delete API. Its three payload
+    tables are deleted here on the same connection as the session transaction,
+    so a rollback restores both the business facts and checkpoint history.
+    """
+    is_postgres = db.get_bind().dialect.name == "postgresql"
+    if is_postgres:
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                   {"key": f"chat-session:{session_id}"})
+    query = db.query(GraphCheckpointOwner).filter(
+        GraphCheckpointOwner.session_id == session_id,
+        GraphCheckpointOwner.owner_id == owner_id,
+    )
+    if interview_ids:
+        from sqlalchemy import or_
+
+        query = db.query(GraphCheckpointOwner).filter(
+            GraphCheckpointOwner.owner_id == owner_id,
+            or_(GraphCheckpointOwner.session_id == session_id,
+                GraphCheckpointOwner.interview_id.in_(interview_ids)),
+        )
+    rows = query.all()
+    if is_postgres:
+        _ensure_checkpoint_threads_idle(db, [row.thread_id for row in rows])
+        for row in rows:
+            for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+                db.execute(text(f"DELETE FROM {table} WHERE thread_id = :thread_id"),
+                           {"thread_id": row.thread_id})
+    for row in rows:
+        db.delete(row)
+    if isinstance(checkpointer, MemoryCheckpointer) and rows:
+        # In-memory state is irreversible; defer it until the ORM transaction
+        # commits so a later business error leaves the snapshot recoverable.
+        db.info.setdefault("checkpoint_memory_deletions", []).append(
+            (checkpointer, tuple(row.thread_id for row in rows))
+        )
+    return len(rows)
+
+
+def _ensure_checkpoint_threads_idle(db: Session, thread_ids: list[str]) -> None:
+    """Fence active worker threads before their persisted snapshots are removed."""
+    for thread_id in thread_ids:
+        held = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": thread_id},
+        ).scalar_one()
+        if not held:
+            raise CheckpointRunActive("checkpoint run already active")
+
+
+@event.listens_for(Session, "after_commit")
+def _delete_committed_memory_checkpoints(db: Session) -> None:
+    """Apply pending local-saver deletion only after its owner rows commit."""
+    for saver, thread_ids in db.info.pop("checkpoint_memory_deletions", []):
+        for thread_id in thread_ids:
+            saver.delete_thread(thread_id)
+            saver.records.pop(thread_id, None)
+            saver._thread_owners.pop(thread_id, None)
+
+
+@event.listens_for(Session, "after_rollback")
+def _keep_rolled_back_memory_checkpoints(db: Session) -> None:
+    """Discard deletion intents when their database transaction is rolled back."""
+    db.info.pop("checkpoint_memory_deletions", None)
 
 
 def authorize_checkpoint(

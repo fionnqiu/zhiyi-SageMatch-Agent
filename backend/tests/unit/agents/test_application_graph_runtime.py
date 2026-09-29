@@ -43,6 +43,26 @@ def test_graph_retries_invalid_result_within_budget() -> None:
     assert sum(event["event_type"] == "retry_scheduled" for event in output["events"]) == 1
 
 
+def test_graph_retries_transient_stage_exception_within_budget() -> None:
+    """A retryable exception must reach the same bounded decision path as validation errors."""
+    attempts = 0
+
+    async def answer(_state: AgentState) -> dict:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary provider failure")
+        return {"result": {"valid": True}}
+
+    output = asyncio.run(build_application_graph(
+        stages={"knowledge_qa.answer": answer},
+    ).ainvoke(AgentState(requested_mode="knowledge_qa", max_retries=1)))
+    assert attempts == 2
+    assert output["retry_count"] == 1
+    assert output["status"] == "degraded"
+    assert sum(event["event_type"] == "retry_scheduled" for event in output["events"]) == 1
+
+
 def test_handler_runs_only_after_validation_and_decision() -> None:
     """A rejected candidate must never reach the business writer."""
     calls: list[str] = []

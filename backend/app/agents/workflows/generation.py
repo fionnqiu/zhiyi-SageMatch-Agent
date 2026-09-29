@@ -10,13 +10,16 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.integrations import llm
+from app.agents.orchestration.graph import AgentState, SupervisedRoute
+from app.agents.orchestration.supervisor import choose_generation_revision
 from app.agents.roles.authoring import author_question_candidate, critique_question_candidate
 from app.agents.roles.memory import MemoryManager
+from app.services.operations.llm_gateway import provider_available
 from app.services.materials.recall import recall_snippets
 from app.services.chat.session import stub_pack
 
 
-def _candidate_error(candidate: dict[str, Any]) -> str:
+def candidate_error(candidate: dict[str, Any]) -> str:
     """Reject packs that the live interviewer cannot ask as spoken questions."""
     questions = candidate.get("questions")
     if not isinstance(questions, list) or not 8 <= len(questions) <= 12:
@@ -73,9 +76,27 @@ class InterviewGenerationStages:
         self.verdict: dict[str, Any] = {"pass": True, "reason": ""}
         self.validation_error = ""
         self.revisions = 0
+        self.author_attempts = 0
+        self.critic_attempts = 0
+        self.supervisor_fallback = ""
         self.parent_task_id: str | None = None
         self.payload: dict[str, Any] = {}
         self.handoffs: list[dict[str, Any]] = []
+
+    def reset(self) -> None:
+        """Discard in-process candidate data before a bounded graph retry."""
+        self.hits = []
+        self.context = ""
+        self.candidate = {}
+        self.verdict = {"pass": True, "reason": ""}
+        self.validation_error = ""
+        self.revisions = 0
+        self.author_attempts = 0
+        self.critic_attempts = 0
+        self.supervisor_fallback = ""
+        self.parent_task_id = None
+        self.payload = {}
+        self.handoffs = []
 
     async def retrieve_context(self, _state) -> dict[str, Any]:
         self.hits = await recall_snippets(self.db, self.content)
@@ -94,38 +115,58 @@ class InterviewGenerationStages:
         return {"diagnostics": {"job_profile_source": "request"}}
 
     async def author(self, _state) -> dict[str, Any]:
-        if not llm.llm_available():
+        self.author_attempts += 1
+        self.revisions = max(0, self.author_attempts - 1)
+        if not provider_available(self.db, "author"):
             self.candidate = stub_pack(self.content)
-            return {"diagnostics": {"generation_fallback": "provider_unavailable"}}
+            return {"diagnostics": {"generation_fallback": "provider_unavailable",
+                                    "supervisor_role_evidence": {
+                                        "ok": True, "question_count": len(self.candidate["questions"]),
+                                    }}}
         result = await author_question_candidate(
             self.db, self.content, context=self.context, hits=self.hits,
-            run_id=self.run_id, attempt=1, on_thought=self.on_thought,
+            run_id=self.run_id, attempt=self.author_attempts,
+            objection=(self.verdict["reason"] or self.validation_error) if self.revisions else "",
+            parent_task_id=self.parent_task_id, on_thought=self.on_thought,
         )
         self.candidate = dict(result.get("output") or {}) if result.get("ok") else {}
+        evidence: dict[str, Any] = {
+            "ok": bool(self.candidate),
+            "question_count": len(self.candidate.get("questions") or []),
+        }
         if result.get("handoff"):
             self.handoffs.append(_compact_handoff(result["handoff"]))
+            evidence["output_sha256"] = self.handoffs[-1]["output_sha256"]
         self.parent_task_id = (result.get("handoff") or {}).get("task", {}).get("task_id")
-        return {"diagnostics": {"generation_author_ok": bool(self.candidate)}}
+        return {"diagnostics": {"generation_author_ok": bool(self.candidate),
+                                "supervisor_role_evidence": evidence}}
 
     async def deterministic_validate(self, _state) -> dict[str, Any]:
-        self.validation_error = _candidate_error(self.candidate)
+        self.validation_error = candidate_error(self.candidate)
         return {"diagnostics": {"generation_candidate_valid": not self.validation_error}}
 
     async def critic(self, _state) -> dict[str, Any]:
-        if self.validation_error or not llm.llm_available():
+        self.critic_attempts += 1
+        if self.validation_error or not provider_available(self.db, "critic"):
             self.verdict = {"pass": not self.validation_error, "reason": self.validation_error}
-            return {}
+            return {"diagnostics": {"supervisor_role_evidence": {
+                "passed": bool(self.verdict["pass"]),
+            }}}
         reviewed = await critique_question_candidate(
             self.db, self.candidate, run_id=self.run_id,
             parent_task_id=self.parent_task_id, on_thought=self.on_thought,
         )
         self.verdict = reviewed["verdict"]
+        evidence = {"passed": bool(self.verdict["pass"])}
         if reviewed.get("handoff"):
             self.handoffs.append(_compact_handoff(reviewed["handoff"]))
-        return {"diagnostics": {"generation_critic_pass": self.verdict["pass"]}}
+            self.parent_task_id = (reviewed["handoff"].get("task") or {}).get("task_id")
+            evidence["output_sha256"] = self.handoffs[-1]["output_sha256"]
+        return {"diagnostics": {"generation_critic_pass": self.verdict["pass"],
+                                "supervisor_role_evidence": evidence}}
 
     async def revise_once(self, _state) -> dict[str, Any]:
-        if self.verdict["pass"] or not llm.llm_available():
+        if self.verdict["pass"] or not provider_available(self.db, "author"):
             return {}
         self.revisions = 1
         result = await author_question_candidate(
@@ -137,7 +178,7 @@ class InterviewGenerationStages:
         self.candidate = dict(result.get("output") or {}) if result.get("ok") else {}
         if result.get("handoff"):
             self.handoffs.append(_compact_handoff(result["handoff"]))
-        self.validation_error = _candidate_error(self.candidate)
+        self.validation_error = candidate_error(self.candidate)
         if not self.validation_error:
             reviewed = await critique_question_candidate(
                 self.db, self.candidate, run_id=self.run_id,
@@ -150,7 +191,7 @@ class InterviewGenerationStages:
         return {"diagnostics": {"generation_revisions": 1}}
 
     async def question_set_validate(self, _state) -> dict[str, Any]:
-        self.validation_error = _candidate_error(self.candidate)
+        self.validation_error = candidate_error(self.candidate)
         if not self.validation_error and not self.verdict["pass"]:
             self.validation_error = self.verdict["reason"] or "题目未通过质检"
         # One rejected revision has a deterministic endpoint. The fallback is
@@ -159,6 +200,7 @@ class InterviewGenerationStages:
         return {"result": {"valid": True, "question_count": len(self.payload["questions"])},
                 "diagnostics": {"generation_fallback": self.validation_error or "",
                                 "generation_revisions": self.revisions,
+                                "generation_supervisor_fallback": self.supervisor_fallback,
                                 "generation_handoffs": self.handoffs}}
 
     def callbacks(self) -> dict[str, Any]:
@@ -167,3 +209,36 @@ class InterviewGenerationStages:
             "load_job_profile", "retrieve_context", "author", "deterministic_validate", "critic",
             "revise_once", "question_set_validate",
         )}
+
+    def allowed_roles(self, _state: AgentState) -> tuple[str, ...]:
+        """Require author and critic evidence before the supervisor may finish."""
+        if self.author_attempts == 0:
+            return ("author",)
+        if self.validation_error:
+            return ("author",) if self.author_attempts < 2 else ("finish",)
+        if self.critic_attempts < self.author_attempts:
+            return ("critic",)
+        if self.verdict["pass"] or self.author_attempts >= 2:
+            return ("finish",)
+        return ("author", "finish")
+
+    async def select_role(self, _state: AgentState, allowed: tuple[str, ...]) -> str:
+        """Ask the existing analyst model only when a rejected pack has two safe exits."""
+        if len(allowed) == 1:
+            return allowed[0]
+        selected, self.supervisor_fallback = await choose_generation_revision(
+            self.db, self.verdict["reason"]
+        )
+        return selected if selected in allowed else "author"
+
+    def supervised_route(self) -> SupervisedRoute:
+        """Expose bounded role work to the checkpointed application graph."""
+        return SupervisedRoute(
+            mode="interview_generation", allowed_roles=self.allowed_roles,
+            select_role=self.select_role,
+            workers={"author": self.author, "critic": self.critic},
+            prepare={"load_job_profile": self.load_job_profile,
+                     "retrieve_context": self.retrieve_context},
+            after_worker={"author": {"deterministic_validate": self.deterministic_validate}},
+            finalize=self.question_set_validate, max_handoffs=4, reset=self.reset,
+        )

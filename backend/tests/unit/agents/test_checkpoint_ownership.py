@@ -194,6 +194,36 @@ def test_exclusive_checkpoint_run_derives_thread_when_run_id_is_none() -> None:
     asyncio.run(scenario())
 
 
+def test_delete_session_checkpoints_removes_only_owned_threads() -> None:
+    """Session and linked interview bindings are removed without crossing owners."""
+    from app.agents.orchestration.checkpoint import delete_session_checkpoints
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[GraphCheckpointOwner.__table__])
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    saver = MemoryCheckpointer()
+    saver.save("session:s1", {"schema_version": "agent-state.v1", "session_id": "s1"},
+               owner_id="local-user", session_id="s1")
+    with Session(engine) as db:
+        db.add_all([
+            GraphCheckpointOwner(thread_id="session:s1", owner_id="local-user", tenant_id="local",
+                                 session_id="s1", expires_at=future),
+            GraphCheckpointOwner(thread_id="interview:i1", owner_id="local-user", tenant_id="local",
+                                 interview_id="i1", expires_at=future),
+            GraphCheckpointOwner(thread_id="session:s2", owner_id="local-user", tenant_id="local",
+                                 session_id="s2", expires_at=future),
+        ])
+        db.commit()
+        assert delete_session_checkpoints(db, "s1", owner_id="local-user", interview_ids=["i1"],
+                                          checkpointer=saver) == 2
+        db.commit()
+        assert db.get(GraphCheckpointOwner, "session:s1") is None
+        assert db.get(GraphCheckpointOwner, "interview:i1") is None
+        assert db.get(GraphCheckpointOwner, "session:s2") is not None
+        assert "session:s1" not in saver.records
+        assert "session:s1" not in saver._thread_owners
+
+
 def test_memory_checkpoint_read_checks_owner() -> None:
     """A guessed thread ID cannot disclose snapshot values in development."""
     saver = MemoryCheckpointer()

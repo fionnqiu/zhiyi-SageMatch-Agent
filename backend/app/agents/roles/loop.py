@@ -98,7 +98,7 @@ class _RoleModel(BaseChatModel):
         if getattr(self, "_on_thought", None) is None:
             from app.services.operations.llm_gateway import complete_with
 
-            schemas = tool_schemas_for(profile_for(self.role).tool_scope)
+            schemas = tool_schemas_for(profile_for(self.role).tool_scope, role=self.role)
             try:
                 data = await complete_with(
                     self._db(),
@@ -453,8 +453,9 @@ def build_role_agent(
         return END
 
     def after_tools(state: AgentState) -> str:
-        # A finish observation is the role's decision. Anything else goes back to the model.
-        if any(isinstance(message, ToolMessage) and message.name == "finish" for message in state["messages"]):
+        # Only an executed finish may stop the worker; rejected tool calls
+        # return to the model so it can correct its arguments within budget.
+        if _successful_finish_output(state["messages"]) is not None:
             return END
         return "agent"
 
@@ -648,11 +649,35 @@ async def run_team(
 
 
 def _finish_output(messages: list[Any]) -> dict[str, Any]:
-    """The role's decision is the last finish call. Later tool chatter does not replace it."""
-    for message in reversed(messages):
-        if not isinstance(message, AIMessage):
-            continue
-        for call in message.tool_calls or []:
-            if call.get("name") == "finish" and isinstance(call.get("args"), dict):
-                return dict(call["args"])
-    return {}
+    """Return the last accepted finish payload, not the model's unexecuted arguments."""
+    return _successful_finish_output(messages) or {}
+
+
+def _successful_finish_output(messages: list[Any]) -> dict[str, Any] | None:
+    """Match finish receipts to calls before trusting the tool's accepted payload."""
+    pending: dict[str, set[str]] = {}
+    output: dict[str, Any] | None = None
+    for message in messages:
+        if isinstance(message, AIMessage):
+            pending.update({
+                str(call["id"]): set(call["args"])
+                for call in message.tool_calls or []
+                if call.get("name") == "finish" and call.get("id") and isinstance(call.get("args"), dict)
+            })
+        elif isinstance(message, ToolMessage) and message.name == "finish":
+            call_id = str(message.tool_call_id or "")
+            if call_id not in pending:
+                continue
+            submitted_fields = pending.pop(call_id)
+            receipt = _loads(str(message.content))
+            if (
+                message.status != "error"
+                and isinstance(receipt, dict)
+                and receipt.get("success") is True
+                and receipt.get("final") is True
+                and isinstance(receipt.get("payload"), dict)
+            ):
+                # StructuredTool fills absent optional arguments with None;
+                # those defaults were not part of the model's decision.
+                output = {key: value for key, value in receipt["payload"].items() if key in submitted_fields}
+    return output

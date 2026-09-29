@@ -26,6 +26,15 @@ def route(db: Session, role: str) -> tuple[ProviderConfig | None, RoleBinding | 
     return choice.provider, choice.binding
 
 
+def provider_available(db: Session, role: str) -> bool:
+    """Check the credentials and model that a role request would actually use."""
+    choice = choose_provider(db, role)
+    settings = get_settings()
+    api_key = (choice.provider.api_key if choice.provider else "") or settings.llm_api_key
+    model = (choice.binding.model if choice.binding and choice.binding.model else "") or settings.llm_model
+    return bool(api_key and model)
+
+
 async def complete(
     db: Session,
     role: str,

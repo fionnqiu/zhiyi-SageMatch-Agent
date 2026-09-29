@@ -53,7 +53,7 @@ def test_generation_stages_revise_once_then_commit_validated_pack() -> None:
 
     with patch("app.agents.workflows.generation.recall_snippets", new=AsyncMock(return_value=[])), patch(
         "app.agents.workflows.generation.MemoryManager"
-    ) as memory, patch("app.agents.workflows.generation.llm.llm_available", return_value=True), patch(
+    ) as memory, patch("app.agents.workflows.generation.provider_available", return_value=True), patch(
         "app.agents.workflows.generation.author_question_candidate", new=author
     ), patch("app.agents.workflows.generation.critique_question_candidate", new=critic):
         memory.return_value.render.return_value = ""
@@ -79,7 +79,7 @@ def test_invalid_revised_pack_uses_deterministic_fallback() -> None:
 
     with patch("app.agents.workflows.generation.recall_snippets", new=AsyncMock(return_value=[])), patch(
         "app.agents.workflows.generation.MemoryManager"
-    ) as memory, patch("app.agents.workflows.generation.llm.llm_available", return_value=True), patch(
+    ) as memory, patch("app.agents.workflows.generation.provider_available", return_value=True), patch(
         "app.agents.workflows.generation.author_question_candidate",
         new=AsyncMock(return_value={"ok": True, "output": bad, "handoff": {"task": {"task_id": "author-task"}}}),
     ) as author, patch("app.agents.workflows.generation.critique_question_candidate") as critic:

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.contracts.contracts import profile_for
 from app.agents.contracts.envelopes import AgentTask
+from app.agents.orchestration.supervisor import choose_generation_revision
 from app.agents.roles.loop import run_agent, run_handoff
 from app.agents.roles.memory import MemoryManager
 from app.agents.orchestration.trace import current_run_id
@@ -23,6 +24,8 @@ class _AuthoringState(TypedDict):
     revisions: int
     run_id: str
     handoffs: list[dict[str, Any]]
+    next_role: str
+    supervisor_fallback: str
 
 
 def _authoring_graph(db: Session, job_text: str, context: str, hits: list[dict[str, Any]], on_thought: Any) -> Any:
@@ -54,19 +57,31 @@ def _authoring_graph(db: Session, job_text: str, context: str, hits: list[dict[s
     async def revise_once(state: _AuthoringState) -> dict[str, Any]:
         return {"objection": state["verdict"]["reason"] or "题目未通过质检", "revisions": 1}
 
+    async def supervisor_decide(state: _AuthoringState) -> dict[str, Any]:
+        # A critic veto permits one model-selected rewrite or a validated
+        # fallback; the role cannot choose another route or write a question set.
+        role, fallback = await choose_generation_revision(db, state["verdict"]["reason"])
+        return {"next_role": role, "supervisor_fallback": fallback}
+
     def after_author(state: _AuthoringState) -> str:
         output = state["result"].get("output") or {}
         return "critic" if state["result"].get("ok") and output.get("questions") else "finish"
 
     def after_critic(state: _AuthoringState) -> str:
-        return "revise" if not state["verdict"]["pass"] and state["revisions"] == 0 else "finish"
+        return "supervisor" if not state["verdict"]["pass"] and state["revisions"] == 0 else "finish"
+
+    def after_supervisor(state: _AuthoringState) -> str:
+        return "revise" if state["next_role"] == "author" else "finish"
 
     graph.add_node("author", author)
     graph.add_node("critic", critic)
+    graph.add_node("supervisor_decide", supervisor_decide)
     graph.add_node("revise_once", revise_once)
     graph.add_edge(START, "author")
     graph.add_conditional_edges("author", after_author, {"critic": "critic", "finish": END})
-    graph.add_conditional_edges("critic", after_critic, {"revise": "revise_once", "finish": END})
+    graph.add_conditional_edges("critic", after_critic, {"supervisor": "supervisor_decide", "finish": END})
+    graph.add_conditional_edges("supervisor_decide", after_supervisor,
+                                {"revise": "revise_once", "finish": END})
     graph.add_edge("revise_once", "author")
     return graph.compile()
 
@@ -91,6 +106,8 @@ async def author_questions(
         "revisions": 0,
         "run_id": current_run_id() or uuid4().hex,
         "handoffs": [],
+        "next_role": "",
+        "supervisor_fallback": "",
     })
     result = state["result"]
     verdict = state["verdict"]
@@ -105,6 +122,7 @@ async def author_questions(
         "verdict": "passed" if verdict["pass"] else "rejected",
         "reason": verdict["reason"],
         "handoffs": state["handoffs"],
+        "supervisor_fallback": state["supervisor_fallback"],
     }
     return output
 

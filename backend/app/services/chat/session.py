@@ -6,6 +6,7 @@ import re
 import uuid
 import logging
 import time
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -31,7 +32,9 @@ from app.models import (
 )
 from app.models.platform.stream import StreamRun
 from app.agents.roles.authoring import author_questions
-from app.agents.orchestration.checkpoint import authorize_checkpoint, checkpoint_config, derive_thread_id
+from app.agents.orchestration.checkpoint import (
+    authorize_checkpoint, checkpoint_config, delete_session_checkpoints, derive_thread_id,
+)
 from app.agents.orchestration.graph import AgentState as GraphAgentState, build_application_graph
 from app.agents.orchestration.observability import persist_graph_trace
 from app.agents.orchestration.trace import graph_run_scope
@@ -39,7 +42,7 @@ from app.agents.roles.memory import MemoryManager
 from app.core.config import get_settings
 from app.services.shared.common import ANON, audit, new_id, now
 from app.services.chat.intent import resolve_intent
-from app.services.operations.llm_gateway import complete, stream_parts
+from app.services.operations.llm_gateway import complete, provider_available, stream_parts
 
 # 知识回答和追问要能写完整段分析。700 会在简历分析这类长回答中途被供应商截断。
 ANSWER_MAX_TOKENS = 4096
@@ -78,10 +81,12 @@ def create_session(db: Session, title: str = "新会话") -> ChatSession:
     return session
 
 
-def clear_session(db: Session, session_id: str) -> ChatSession:
+def clear_session(db: Session, session_id: str, *, checkpointer: Any | None = None) -> ChatSession:
     session = get_session(db, session_id)
     if not session:
         raise ValueError("session not found")
+    # Clearing visible history also clears saved graph snapshots derived from it.
+    delete_session_checkpoints(db, session_id, owner_id=ANON, checkpointer=checkpointer)
     db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
     session.job_title = None
     session.title = "新会话"
@@ -111,7 +116,7 @@ def delete_interviews(db: Session, interview_ids: list[str]) -> None:
     db.query(Interview).filter(Interview.id.in_(interview_ids)).delete(synchronize_session=False)
 
 
-def delete_session(db: Session, session_id: str) -> None:
+def delete_session(db: Session, session_id: str, *, checkpointer: Any | None = None) -> None:
     """Drop a history session and everything generated from it.
 
     Question sets hang off the session's job profile, and interviews hang off those
@@ -139,6 +144,10 @@ def delete_session(db: Session, session_id: str) -> None:
             filters.append(Interview.question_set_id.in_(set_ids))
         interview_ids = [row.id for row in db.query(Interview.id).filter(or_(*filters)).all()]
     title = session.title
+    # The deletion transaction uses the same session lock as live chat, so a
+    # graph cannot recreate checkpoint state while this session is removed.
+    delete_session_checkpoints(db, session_id, owner_id=ANON, interview_ids=interview_ids,
+                               checkpointer=checkpointer)
     delete_interviews(db, interview_ids)
     if set_ids:
         db.query(Question).filter(Question.question_set_id.in_(set_ids)).delete(synchronize_session=False)
@@ -194,13 +203,21 @@ async def send_chat_graph(
     """Keep the classifier and business graph in one request usage budget."""
 
     settings = get_settings()
-    with llm.usage_budget_scope(
-        token_budget=settings.graph_token_budget,
-        cost_budget=settings.graph_cost_budget,
-    ):
-        return await _send_chat_graph_impl(
-            db, content, session_id, answers, attachments, checkpointer=checkpointer,
-        )
+    # Route lookup and the later graph write must observe one serial order for
+    # an existing conversation, not only for one checkpoint thread invocation.
+    lock = (
+        checkpointer.exclusive_run(f"chat-session:{session_id}")
+        if session_id and checkpointer is not None and hasattr(checkpointer, "exclusive_run")
+        else nullcontext()
+    )
+    async with lock:
+        with llm.usage_budget_scope(
+            token_budget=settings.graph_token_budget,
+            cost_budget=settings.graph_cost_budget,
+        ):
+            return await _send_chat_graph_impl(
+                db, content, session_id, answers, attachments, checkpointer=checkpointer,
+            )
 
 
 async def _send_chat_graph_impl(
@@ -245,6 +262,9 @@ async def _send_chat_graph_impl(
         precomputed_intent=routed["intent"], run_id=run_id,
         defer_retrieval=routed["route"]["route"] == "knowledge_qa",
     )
+    # A first turn creates its session inside begin_chat; bind the new ID before
+    # checkpoint authorization so later clear/delete can find this thread.
+    state.session_id = turn["session"].id
     prepared: dict[str, Any] = {"turn": turn}
     retrieval_stages = staged_chat_retrieval_callbacks(db, turn)
 
@@ -304,7 +324,7 @@ async def _send_chat_graph_impl(
             thread_id,
             state,
             owner_id=ANON,
-            session_id=session_id,
+            session_id=state.session_id,
         )
         db.commit()
     with graph_run_scope(run_id), llm.deadline_scope(deadline_at), llm.usage_budget_scope(
@@ -1200,11 +1220,20 @@ async def generate_question_pack(
     on_thought=None,
 ) -> dict[str, Any]:
     """Author a question pack through the author contract. Eval reuses this same path."""
-    if not llm.llm_available():
-        return stub_pack(job_text)
     try:
+        # Provider lookup can touch the admin-configured database; treat an
+        # unavailable or temporarily unreadable provider like the existing
+        # offline path instead of letting chat generation escape its fallback.
+        if not provider_available(db, "author"):
+            return stub_pack(job_text)
+        # Import at use time because the generation workflow uses this module's
+        # offline pack and both entrypoints must enforce the same pack contract.
+        from app.agents.workflows.generation import candidate_error
+
         data = await author_questions(db, job_text, session_id=session_id, hits=hits, on_thought=on_thought)
-        if not data.get("questions"):
+        # A supervisor may stop after the critic veto; rejected questions must
+        # never become the persisted pack merely because they are well-formed.
+        if candidate_error(data) or (data.get("_agent") or {}).get("verdict") == "rejected":
             return stub_pack(job_text)
         data.pop("_agent", None)
         return data
@@ -1224,72 +1253,29 @@ def _stored_options(item: dict[str, Any]) -> list:
 
 
 def stub_pack(job_text: str) -> dict[str, Any]:
-    title = "资深分布式系统架构师" if "架构" in job_text else title_from(job_text)
-    # Offline packs follow the same band as the author: eight spoken-heavy questions, not five choices.
+    title = title_from(job_text)
+    # Offline questions refer to JD duties without inventing a technical stack
+    # or claiming that an unavailable provider completed a tailored analysis.
+    prompts = [
+        ("open", "请从岗位描述中选一项核心职责，讲述你独立完成过的相近工作。", "说明目标、本人职责、行动及可核实结果。", "核对经历与岗位职责的对应关系及个人贡献。"),
+        ("scenario", "如果接手岗位描述中的一项任务，你会如何确认目标和交付标准？", "先澄清对象、范围、时限和验收标准，再制定步骤。", "考察面对不完整需求时的澄清能力。"),
+        ("open", "岗位描述中哪项要求最符合你的经验？请举一个具体例子。", "给出与要求直接相关的经历、做法及结果。", "避免只复述岗位关键词，关注可验证的事实。"),
+        ("scenario", "执行该岗位的一项关键任务时，资源或时间突然缩减，你会怎样调整？", "说明优先级、取舍依据、沟通方式及风险控制。", "考察约束变化时是否能作出有依据的选择。"),
+        ("open", "请讲述一次与你申请的岗位相关的协作经历，你负责什么？", "说明协作方、职责边界、冲突处理和最终结果。", "关注真实协作过程和候选人的具体贡献。"),
+        ("scenario", "岗位描述中的工作出现质量问题时，你会怎样定位原因并恢复交付？", "先确认影响和证据，再定位原因、处理问题并复盘。", "考察排查顺序、风险意识与闭环能力。"),
+        ("open", "请讲述一次相关工作没有达到预期的经历，以及你后来怎样改进。", "讲清原目标、偏差原因、改进措施和后续验证。", "关注反思是否具体且有可验证的改进。"),
+        ("scenario", "入职后需要承担岗位描述中的主要职责，你会如何安排最初一个月？", "先了解现状和关键人员，再确定优先任务及阶段性成果。", "考察岗位理解、学习计划和现实的交付节奏。"),
+    ]
     questions = [
-        {
-            "kind": "open",
-            "stem": "这个岗位要你设计一套可扩展的 AI 应用架构。你会如何拆分模型调用、检索和工具调用？",
-            "options": [],
-            "answer": "按调用、检索、工具三层拆分，并说明扩展点和失败边界",
-            "explanation": "听候选人是否能把 LLM、RAG 和工具调用拆开，而不是堆在一个接口里。",
-        },
-        {
-            "kind": "scenario",
-            "stem": "检索结果经常答非所问。你会怎么定位是切块、召回还是提示词的问题？",
-            "options": [],
-            "answer": "先看召回片段是否相关，再看提示是否约束了引用",
-            "explanation": "排查要有顺序：先验证检索命中，再谈生成。",
-        },
-        {
-            "kind": "open",
-            "stem": "如果要接入 MCP 或 Function Call，你如何决定一个工具该不该交给模型？",
-            "options": [],
-            "answer": "只把边界清楚、可校验、失败可回退的动作做成工具",
-            "explanation": "工具不是越多越好，关键是权限和失败后的退路。",
-        },
-        {
-            "kind": "scenario",
-            "stem": "线上回答突然变慢，用户开始超时。你会先看哪一层，并如何临时止血？",
-            "options": [],
-            "answer": "先分清模型延迟、检索延迟和下游工具，再限流或降级",
-            "explanation": "并发瓶颈要先定位，再决定降级，而不是一律加大超时。",
-        },
-        {
-            "kind": "open",
-            "stem": "长对话里模型开始忘记前面的约束。你会怎么区分该进上下文的内容和该外置的记忆？",
-            "options": [],
-            "answer": "近期原话留在上下文，稳定事实外置，并说明何时回读",
-            "explanation": "看候选人是否把工作记忆和长期记忆分开，而不是无限加长提示。",
-        },
-        {
-            "kind": "scenario",
-            "stem": "同一个岗位描述连续两次出题，题目高度重复。你怎么在生成链路里发现并停下来？",
-            "options": [],
-            "answer": "用题干重叠率做闸门，超阈值则带原因重出一次后停止",
-            "explanation": "质检要有停止条件，不能为了换题无限循环。",
-        },
-        {
-            "kind": "open",
-            "stem": "让你和后端、产品一起落地一个 Agent 功能。你如何划清谁决定工具权限、谁验收结果？",
-            "options": [],
-            "answer": "权限由契约约束，验收看可观察结果，不由模型自行放宽",
-            "explanation": "协作题看边界，而不是只讲个人能写什么代码。",
-        },
-        {
-            "kind": "open",
-            "stem": "为什么热点读会用本地缓存加 Redis，而不是只靠其中一层？一致性你怎么处理？",
-            "options": [],
-            "answer": "本地挡重复读，Redis 做跨实例共享；一致性靠失效和锁，不是本地更强",
-            "explanation": "问答题听候选人讲分层和一致性，不再用选项暗示答案。",
-        },
+        {"kind": kind, "stem": stem, "options": [], "answer": answer, "explanation": explanation}
+        for kind, stem, answer, explanation in prompts
     ]
     return {
         "job_title": title,
-        "summary": "高并发、缓存一致性与故障应急是本岗位的核心考察要求。",
-        "focus": ["高并发架构", "网络协议", "一致性算法", "故障排查"],
-        "coverage": 0.92,
-        "reply": "已分析该岗位的核心要求，正在为你生成针对性题目。生成完成后可直接发起模拟面试：",
+        "summary": "当前使用基于岗位描述的通用面试题。",
+        "focus": ["岗位职责", "相关经验", "问题处理", "协作交付"],
+        "coverage": 0.0,
+        "reply": "已准备好一组围绕岗位职责的通用面试题，可直接开始模拟面试：",
         "actions": [
             questions[0]["stem"],
             "直接发起一场 30 分钟全真模拟面试实战",

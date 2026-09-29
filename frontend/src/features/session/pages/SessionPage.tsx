@@ -55,6 +55,7 @@ export function SessionPage() {
   const [liveReply, setLiveReply] = useState<ChatMessage | null>(null);
   const [userAvatar] = useState(readUserAvatar);
   const streamRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const reduceMotion = useReducedMotion() ?? false;
 
@@ -67,8 +68,23 @@ export function SessionPage() {
   }, [currentId]);
 
   useEffect(() => {
-    // 真流式不会增加消息条数。正文变长时也要跟着滚到底。
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
+    // 真流式每个增量都会触发渲染；合并到下一帧并用即时滚动，避免连续
+    // smooth scroll 动画互相排队，在思考切正文时造成一次明显卡顿。
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      const node = streamRef.current;
+      if (node) {
+        const streaming = Boolean(liveReply?.content) || busy;
+        node.scrollTo({ top: node.scrollHeight, behavior: streaming ? "auto" : "smooth" });
+      }
+      scrollFrameRef.current = null;
+    });
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
   }, [current?.messages?.length, busy, liveReply?.content, liveReply?.extra?.thinking, liveReply?.extra?.reasoning]);
 
   async function onSend(text?: string, answers?: ClarificationAnswer[]) {
@@ -131,6 +147,10 @@ export function SessionPage() {
             finishedId = event.session_id;
             resumeId.current = event.session_id;
             setCurrentId(event.session_id);
+            // The user turn is already persisted before streaming starts. Refresh
+            // the rail at meta time so a newly created conversation appears as
+            // soon as it has its first record, instead of waiting for done.
+            void refresh(event.session_id).catch(() => undefined);
           }
           return;
         }

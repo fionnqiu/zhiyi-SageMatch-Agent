@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import math
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, TypedDict
 
@@ -35,6 +36,22 @@ class _GraphState(TypedDict):
 
 StageCallback = Callable[[AgentState], Mapping[str, Any] | Awaitable[Mapping[str, Any]]]
 
+
+@dataclass(frozen=True)
+class SupervisedRoute:
+    """Route-local worker choices; business writes remain in the graph commit node."""
+
+    mode: str
+    allowed_roles: Callable[[AgentState], tuple[str, ...]]
+    select_role: Callable[[AgentState, tuple[str, ...]], str | Awaitable[str]]
+    workers: Mapping[str, StageCallback]
+    finalize: StageCallback
+    max_handoffs: int = 4
+    prepare: Mapping[str, StageCallback] = field(default_factory=dict)
+    after_worker: Mapping[str, Mapping[str, StageCallback]] = field(default_factory=dict)
+    reset: Callable[[], None] | None = None
+
+
 STAGES = {
     "knowledge_qa": ("query_rewrite", "parallel_retrieve", "candidate_fusion", "deduplicate_and_diversify", "rerank", "context_select", "answer", "citation_validate", "repair_once"),
     "interview_generation": ("load_job_profile", "retrieve_context", "author", "deterministic_validate", "critic", "revise_once", "question_set_validate"),
@@ -63,13 +80,15 @@ class ApplicationGraph:
                  handlers: Mapping[str, StageCallback] | None = None,
                  commit: StageCallback | None = None,
                  first_commit: StageCallback | None = None,
-                 first_commit_after: str | None = None) -> None:
+                 first_commit_after: str | None = None,
+                 supervised_route: SupervisedRoute | None = None) -> None:
         self.max_steps = max_steps
         self.checkpointer = checkpointer
         self.stages = dict(stages or {})
         self.handlers = dict(handlers or {})
         self.commit = commit
         self.first_commit = first_commit
+        self.supervised_route = supervised_route
         # Command runs keep the live interview route but execute only their
         # actual stages; answer-specific nodes must never appear in their trace.
         sequences = {**STAGES, **(stage_sequences or {})}
@@ -87,6 +106,10 @@ class ApplicationGraph:
         for name, fn in (("load_context", self._load), ("route_node", self._route),
                          ("policy_gate", self._policy), ("supervisor_handoff", self._handoff),
                          ("dispatch_subgraph", self._dispatch),
+                         ("supervisor_prepare", self._supervisor_prepare),
+                         ("supervisor_decide", self._supervisor_decide),
+                         ("supervisor_worker", self._supervisor_worker),
+                         ("supervisor_finalize", self._supervisor_finalize),
                          ("answer_commit_node", self._first_commit),
                          ("dispatch_followup", self._dispatch_followup),
                          ("observe_node", self._observe), ("validate_node", self._validate),
@@ -105,7 +128,24 @@ class ApplicationGraph:
             ),
             {"dispatch": "supervisor_handoff", "commit": "commit_node", "finish": "finish_node"},
         )
-        graph.add_edge("supervisor_handoff", "dispatch_subgraph")
+        graph.add_conditional_edges(
+            "supervisor_handoff",
+            lambda s: "supervised" if self.supervised_route is not None
+            and s["payload"]["requested_mode"] == self.supervised_route.mode
+            and s["payload"]["status"] == "running" else "fixed",
+            {"supervised": "supervisor_prepare", "fixed": "dispatch_subgraph"},
+        )
+        graph.add_edge("supervisor_prepare", "supervisor_decide")
+        graph.add_conditional_edges(
+            "supervisor_decide", self._supervisor_edge,
+            {"worker": "supervisor_worker", "finish": "supervisor_finalize", "fail": "observe_node"},
+        )
+        graph.add_conditional_edges(
+            "supervisor_worker",
+            lambda s: "continue" if s["payload"]["status"] == "running" else "fail",
+            {"continue": "supervisor_decide", "fail": "observe_node"},
+        )
+        graph.add_edge("supervisor_finalize", "observe_node")
         if first_commit is not None:
             graph.add_edge("dispatch_subgraph", "answer_commit_node")
             graph.add_edge("answer_commit_node", "dispatch_followup")
@@ -127,7 +167,10 @@ class ApplicationGraph:
 
         async def run(data: _GraphState) -> _GraphState:
             state = AgentState.model_validate(data["payload"])
-            attempt = state.retry_count + 1
+            attempt = max(state.retry_count + 1, 1 + sum(
+                event.get("node") == name and event.get("event_type") == "node_started"
+                for event in state.events
+            ))
             started = time.perf_counter()
             _emit(state, name, "node_started", {
                 "attempt": attempt, "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -323,6 +366,145 @@ class ApplicationGraph:
             })
         return {"payload": state.to_json_dict()}
 
+    async def _supervised_stage(self, state: AgentState, name: str, callback: StageCallback) -> AgentState:
+        """Run one named stage while preserving the ordinary stage trace contract."""
+        if state.status != "running" or not self._advance(state, name):
+            return state
+        attempt = 1 + state.completed_nodes.count(name)
+        started = time.perf_counter()
+        _emit(state, name, "node_started", {
+            "attempt": attempt, "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        try:
+            state = await self._callback(state, callback)
+        except llm.UsageBudgetError:
+            _fail(state, "model_budget_exceeded")
+        except TimeoutError:
+            _fail(state, "deadline_exceeded")
+        except Exception:
+            _fail(state, "graph_stage_failed", retryable=True)
+        _emit(state, name, "node_finished", {
+            "attempt": attempt,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "status": "failed" if state.status == "failed" else "success",
+            **({"error_code": state.error["error_code"]} if state.error else {}),
+        })
+        state.completed_nodes.append(name)
+        return state
+
+    async def _supervisor_prepare(self, data: _GraphState) -> _GraphState:
+        state = AgentState.model_validate(data["payload"])
+        route = self.supervised_route
+        assert route is not None
+        if state.retry_count and route.reset is not None:
+            # A graph retry starts a fresh candidate attempt. The adapter owns
+            # sensitive candidate text outside checkpoint state, so reset it.
+            route.reset()
+            state.result = {}
+            state.diagnostics.pop("supervisor_handoff_count", None)
+            state.diagnostics.pop("supervisor_role_evidence", None)
+        for name, callback in route.prepare.items():
+            state = await self._supervised_stage(state, f"{route.mode}.{name}", callback)
+            if state.status != "running":
+                break
+        return {"payload": state.to_json_dict()}
+
+    async def _supervisor_decide(self, data: _GraphState) -> _GraphState:
+        state = AgentState.model_validate(data["payload"])
+        route = self.supervised_route
+        assert route is not None
+        if state.status != "running" or not self._advance(state, "supervisor_decide"):
+            return {"payload": state.to_json_dict()}
+        allowed = route.allowed_roles(state)
+        count = int(state.diagnostics.get("supervisor_handoff_count", 0))
+        if count >= route.max_handoffs:
+            # A finished worker sequence still needs one decision to reach
+            # validation; further worker calls are forbidden at this point.
+            if "finish" not in allowed:
+                _fail(state, "supervisor_handoff_budget_exceeded")
+                return {"payload": state.to_json_dict()}
+            allowed = ("finish",)
+        if not allowed or any(role != "finish" and role not in route.workers for role in allowed):
+            _fail(state, "supervisor_policy_invalid")
+            return {"payload": state.to_json_dict()}
+        try:
+            selected = route.select_role(state, allowed)
+            if inspect.isawaitable(selected):
+                remaining = llm.remaining_budget()
+                if state.deadline_at is not None:
+                    seconds = (state.deadline_at - datetime.now(timezone.utc)).total_seconds()
+                    remaining = min(remaining, seconds) if remaining is not None else seconds
+                async with asyncio.timeout(remaining):
+                    selected = await selected
+            if selected not in allowed:
+                _fail(state, "supervisor_role_forbidden")
+            else:
+                state.decision = {"next_role": selected, "route": route.mode}
+                _emit(state, "supervisor_decide", "supervisor_decision", {"next_role": selected})
+        except llm.UsageBudgetError:
+            _fail(state, "model_budget_exceeded")
+        except TimeoutError:
+            _fail(state, "deadline_exceeded")
+        except Exception:
+            _fail(state, "supervisor_decision_failed", retryable=True)
+        return {"payload": state.to_json_dict()}
+
+    @staticmethod
+    def _supervisor_edge(data: _GraphState) -> str:
+        state = data["payload"]
+        if state["status"] != "running":
+            return "fail"
+        return "finish" if state["decision"].get("next_role") == "finish" else "worker"
+
+    async def _supervisor_worker(self, data: _GraphState) -> _GraphState:
+        state = AgentState.model_validate(data["payload"])
+        route = self.supervised_route
+        assert route is not None
+        role = state.decision.get("next_role")
+        if state.status != "running" or role not in route.workers:
+            _fail(state, "supervisor_role_forbidden")
+            return {"payload": state.to_json_dict()}
+        parent = state.handoffs[-1]["task"]["task_id"] if state.handoffs else None
+        task = AgentTask(
+            run_id=state.run_id, parent_task_id=parent, from_agent="supervisor",
+            to_agent=role, route=route.mode, goal=f"execute_{role}",
+            attempt=int(state.diagnostics.get("supervisor_handoff_count", 0)) + 1,
+            trace_id=state.run_id,
+        )
+        state.handoffs.append({"task": task.model_dump(mode="json"), "decision": None})
+        _emit(state, "supervisor_worker", "agent_called", {"task_id": task.task_id, "agent": role})
+        state.active_agent = role
+        state.diagnostics.pop("supervisor_role_evidence", None)
+        state = await self._supervised_stage(state, f"{route.mode}.{role}", route.workers[role])
+        for name, callback in route.after_worker.get(role, {}).items():
+            if state.status != "running":
+                break
+            state = await self._supervised_stage(state, f"{route.mode}.{name}", callback)
+        state.diagnostics["supervisor_handoff_count"] = task.attempt
+        decision = AgentDecision(
+            task_id=task.task_id, agent=role,
+            status="success" if state.status == "running" else "failed",
+            decision="completed" if state.status == "running" else str((state.error or {}).get("error_code") or "failed"),
+            # Workers expose only compact, code-selected evidence to the
+            # checkpoint; their raw candidate text stays in the adapter.
+            output=dict(state.diagnostics.get("supervisor_role_evidence") or {}),
+            next_action="continue" if state.status == "running" else "fail",
+            confidence=1.0 if state.status == "running" else 0.0, trace_id=state.run_id,
+        )
+        state.handoffs[-1]["decision"] = decision.model_dump(mode="json")
+        _emit(state, "supervisor_worker", "agent_completed", {
+            "task_id": task.task_id, "agent": role, "status": decision.status,
+        })
+        return {"payload": state.to_json_dict()}
+
+    async def _supervisor_finalize(self, data: _GraphState) -> _GraphState:
+        state = AgentState.model_validate(data["payload"])
+        route = self.supervised_route
+        assert route is not None
+        state = await self._supervised_stage(state, f"{route.mode}.question_set_validate", route.finalize)
+        return {"payload": state.to_json_dict()}
+
     async def _dispatch(self, data: _GraphState) -> _GraphState:
         state = AgentState.model_validate(data["payload"])
         if self._advance(state, "dispatch_subgraph"):
@@ -395,7 +577,9 @@ class ApplicationGraph:
     async def _validate(self, data: _GraphState) -> _GraphState:
         state = AgentState.model_validate(data["payload"])
         if state.status == "running" and self._advance(state, "validate_node"):
-            staged = any(name.startswith(f"{state.requested_mode}.") for name in self.stages)
+            staged = any(name.startswith(f"{state.requested_mode}.") for name in self.stages) or (
+                self.supervised_route is not None and self.supervised_route.mode == state.requested_mode
+            )
             valid = state.result.get("valid")
             if valid is False or (staged and type(valid) is not bool):
                 code = str(state.result.get("error_code") or "graph_validation_failed") if valid is False else "graph_validation_missing"
@@ -429,6 +613,14 @@ class ApplicationGraph:
             _emit(state, "decide_node", "agent_completed", {
                 "task_id": task.task_id, "agent": task.to_agent, "status": decision.status,
             })
+        # Retryable worker failures arrive as failed states. Reopen only this
+        # bounded decision path; terminal budget/deadline failures stay terminal.
+        retryable_failure = bool(state.error and state.error.get("retryable"))
+        if state.status == "failed" and retryable_failure and state.retry_count < state.max_retries:
+            if (state.deadline_at is None or datetime.now(timezone.utc) < state.deadline_at) and (
+                state.loop_count < min(state.max_graph_steps, self.max_steps)
+            ):
+                state.status = "running"
         if state.status == "running" and self._advance(state, "decide_node"):
             if state.error and state.error.get("retryable") and state.retry_count < state.max_retries and state.can_continue(datetime.now(timezone.utc)):
                 state.retry_count += 1
@@ -516,14 +708,16 @@ def build_application_graph(*, checkpointer: Any | None = None, max_steps: int =
                             handlers: Mapping[str, StageCallback] | None = None,
                             commit: StageCallback | None = None,
                             first_commit: StageCallback | None = None,
-                            first_commit_after: str | None = None) -> ApplicationGraph:
+                            first_commit_after: str | None = None,
+                            supervised_route: SupervisedRoute | None = None) -> ApplicationGraph:
     """Compile the graph with optional business handlers and checkpoint saver."""
     return ApplicationGraph(checkpointer=checkpointer, max_steps=max_steps, stages=stages,
                             stage_sequences=stage_sequences, handlers=handlers, commit=commit,
-                            first_commit=first_commit, first_commit_after=first_commit_after)
+                            first_commit=first_commit, first_commit_after=first_commit_after,
+                            supervised_route=supervised_route)
 
 
 application_graph = build_application_graph()
 
-__all__ = ["AgentState", "ApplicationGraph", "application_graph", "build_application_graph"]
+__all__ = ["AgentState", "ApplicationGraph", "SupervisedRoute", "application_graph", "build_application_graph"]
 

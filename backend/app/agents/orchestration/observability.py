@@ -12,7 +12,7 @@ from app.models.platform.runtime import AgentEvent as AgentEventRow
 from app.models.platform.runtime import GraphRun, NodeRun, ToolRun
 
 
-_EVENT_KEYS = frozenset({"route", "node", "result_keys", "status", "error_code", "attempt", "thread_id", "timestamp", "duration_ms", "task_id", "agent", "candidate_count", "selected_count", "handoff_count"})
+_EVENT_KEYS = frozenset({"route", "node", "next_role", "result_keys", "status", "error_code", "attempt", "thread_id", "timestamp", "duration_ms", "task_id", "agent", "candidate_count", "selected_count", "handoff_count"})
 _DIAGNOSTIC_KEYS = frozenset({"candidate_count", "selected_count", "handoff_count", "retry_count", "fallback_reason", "token_count", "cost", "checkpoint_recovered"})
 
 

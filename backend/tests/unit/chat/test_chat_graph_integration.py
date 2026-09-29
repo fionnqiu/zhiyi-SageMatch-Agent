@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -74,6 +75,120 @@ def test_nonstream_chat_uses_one_route_and_commits_once() -> None:
     assert begin.await_args.kwargs["precomputed_intent"] is routed["intent"]
     assert begin.await_args.kwargs["run_id"] == "run-1"
     assert begin.await_args.kwargs["defer_retrieval"] is True
+
+
+def test_first_chat_turn_binds_new_session_to_checkpoint() -> None:
+    """A newly created session must own its first request checkpoint."""
+    from app.agents.orchestration.checkpoint import MemoryCheckpointer
+    from app.services.chat.session import send_chat_graph
+
+    session = SimpleNamespace(id="new-session")
+    routed = {
+        "run_id": "new-run", "mode": "blocked", "content": "岗位说明",
+        "intent": {"intent": "clarify", "needs_recall": False},
+        "route": {"route": "clarification", "confidence": 1.0, "source": "test", "original_query": "岗位说明"},
+    }
+    turn = {"session": session, "mode": "clarify", "run_id": "new-run", "route": routed["route"]}
+    db = SimpleNamespace(commit=lambda: None)
+    with (
+        patch("app.services.chat.session.route_chat", new=AsyncMock(return_value=routed)),
+        patch("app.services.chat.session.begin_chat", new=AsyncMock(return_value=turn)),
+        patch("app.services.chat.session.complete_chat_turn", new=AsyncMock(return_value=("请补充岗位信息", {}))),
+        patch("app.services.chat.session.finish_chat", new=AsyncMock(return_value=session)),
+        patch("app.services.chat.session.authorize_checkpoint") as authorize,
+    ):
+        result = asyncio.run(send_chat_graph(db, "岗位说明", None,
+                                             checkpointer=MemoryCheckpointer()))
+
+    assert result is session
+    assert authorize.call_args.kwargs["session_id"] == "new-session"
+    assert authorize.call_args.args[2].session_id == "new-session"
+
+
+def test_nonstream_chat_locks_existing_session_before_routing() -> None:
+    """The session lock must cover routing and the entire graph run."""
+    from app.services.chat.session import send_chat_graph
+
+    events: list[str] = []
+
+    class Saver:
+        @asynccontextmanager
+        async def exclusive_run(self, thread_id: str):
+            events.append(f"lock:{thread_id}")
+            try:
+                yield
+            finally:
+                events.append("unlock")
+
+    async def invoke(*_args, **_kwargs):
+        events.append("run")
+        return SimpleNamespace(id="s1")
+
+    with patch("app.services.chat.session._send_chat_graph_impl", new=invoke):
+        result = asyncio.run(send_chat_graph(object(), "hello", "s1", checkpointer=Saver()))
+
+    assert result.id == "s1"
+    assert events == ["lock:chat-session:s1", "run", "unlock"]
+
+
+def test_chat_pack_rejects_incomplete_author_output() -> None:
+    """The chat path enforces the same author contract as interview creation."""
+    from app.services.chat.session import generate_question_pack
+
+    candidate = {"questions": [{"kind": "open", "stem": "Only a stem"}]}
+    with (
+        patch("app.services.chat.session.provider_available", return_value=True),
+        patch("app.services.chat.session.author_questions", new=AsyncMock(return_value=candidate)),
+        patch("app.services.chat.session.stub_pack", return_value={"fallback": True}) as fallback,
+    ):
+        result = asyncio.run(generate_question_pack(object(), "Python 后端工程师", []))
+
+    assert result == {"fallback": True}
+
+
+def test_chat_pack_falls_back_when_provider_lookup_fails() -> None:
+    from app.services.chat.session import generate_question_pack
+
+    with (
+        patch("app.services.chat.session.provider_available", side_effect=RuntimeError("db unavailable")),
+        patch("app.services.chat.session.stub_pack", return_value={"fallback": True}) as fallback,
+    ):
+        result = asyncio.run(generate_question_pack(object(), "Python 后端工程师", []))
+
+    assert result == {"fallback": True}
+    fallback.assert_called_once_with("Python 后端工程师")
+    fallback.assert_called_once_with("Python 后端工程师")
+
+
+def test_chat_pack_accepts_complete_author_output() -> None:
+    """A complete generated pack reaches persistence instead of silent fallback."""
+    from app.services.chat.session import generate_question_pack
+
+    candidate = {"questions": [
+        {"kind": "open", "stem": f"题目 {index}", "answer": "答案", "explanation": "解析", "options": []}
+        for index in range(8)
+    ]}
+    with (
+        patch("app.services.chat.session.provider_available", return_value=True),
+        patch("app.services.chat.session.author_questions", new=AsyncMock(return_value=candidate)),
+        patch("app.services.chat.session.stub_pack", return_value={"fallback": True}),
+    ):
+        result = asyncio.run(generate_question_pack(object(), "Python 后端工程师", []))
+
+    assert result == candidate
+
+
+def test_offline_pack_for_non_ai_job_does_not_claim_unrelated_skills() -> None:
+    """Fallback questions stay usable when the JD names a nontechnical role."""
+    from app.services.chat.session import stub_pack
+
+    pack = stub_pack("幼儿园教师：负责课程设计、家长沟通和课堂安全。")
+    questions = pack["questions"]
+    assert len(questions) == 8
+    assert all(item["kind"] in {"open", "scenario"} and not item["options"] for item in questions)
+    assert all(item["stem"] and item["answer"] and item["explanation"] for item in questions)
+    visible = " ".join([pack["summary"], pack["reply"], *[item["stem"] for item in questions]])
+    assert not any(term in visible for term in ("MCP", "Redis", "缓存", "AI 应用架构"))
 
 
 def test_clarification_waiting_branch_commits_without_rerouting() -> None:

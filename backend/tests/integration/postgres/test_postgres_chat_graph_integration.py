@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.db import SessionLocal
 from app.models import ChatMessage, GraphCheckpointOwner, GraphRun
+from sqlalchemy import text
 routed = {
     'run_id': 'chat-run-1', 'mode': 'stream', 'content': '缓存击穿',
     'intent': {'intent': 'answer', 'route': 'knowledge_qa', 'confidence': 0.9, 'needs_recall': False},
@@ -54,6 +55,13 @@ with patch('app.services.chat.session.route_chat', new=AsyncMock(return_value=ro
             assert db.query(GraphCheckpointOwner).count() == 1
             answer = db.query(ChatMessage).filter(ChatMessage.role == 'assistant').one()
             assert answer.extra['run_id'] == run.id
+            session_id = answer.session_id
+        assert client.delete(f'/api/sessions/{session_id}').status_code == 200
+        with SessionLocal() as db:
+            assert db.query(GraphCheckpointOwner).count() == 0
+            for table in ('checkpoints', 'checkpoint_blobs', 'checkpoint_writes'):
+                assert db.execute(text(f'SELECT count(*) FROM {table} WHERE thread_id = :thread_id'),
+                                  {'thread_id': 'request:chat-run-1'}).scalar_one() == 0
 """
         completed = subprocess.run(
             [sys.executable, "-c", code],

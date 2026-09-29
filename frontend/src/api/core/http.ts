@@ -116,6 +116,11 @@ export async function readEventStream(
           boundary = buffer.indexOf("\n\n");
         }
       }
+      // Flush TextDecoder at EOF so a split final UTF-8 sequence is emitted
+      // before parsing the trailing SSE frame; otherwise the last character
+      // can disappear when the provider closes immediately after its answer.
+      buffer += decoder.decode();
+      buffer = buffer.replace(/\r\n/g, "\n");
       if (!terminal && buffer.trim()) {
         try { consume(buffer.replace(/\r/g, "\n").trim()); }
         catch (error) {

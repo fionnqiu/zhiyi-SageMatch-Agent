@@ -158,7 +158,9 @@ async def _generate_events(
                             original_query=hashlib.sha256(content.strip().encode("utf-8")).hexdigest(),
                             checkpointer=checkpointer, run_id=run_id,
                             stages=generation.callbacks() if generation else None,
+                            supervised_route=generation.supervised_route() if generation else None,
                             restart_incomplete=bool(generation), action=persist_question_set,
+                            restart_completed_failed=bool(generation),
                         )
 
                     if job_id and worker_id:

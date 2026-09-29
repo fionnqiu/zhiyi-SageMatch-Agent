@@ -217,6 +217,19 @@ class ChatProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["required"], ["stem"])
         self.assertFalse(parameters["additionalProperties"])
 
+    def test_finish_schema_matches_author_and_critic_outputs(self) -> None:
+        author = next(item for item in tool_schemas_for(("finish",), role="author")
+                      if item["function"]["name"] == "finish")
+        critic = next(item for item in tool_schemas_for(("finish",), role="critic")
+                      if item["function"]["name"] == "finish")
+        author_params = author["function"]["parameters"]
+        critic_params = critic["function"]["parameters"]
+        self.assertIn("questions", author_params["required"])
+        self.assertIn("job_title", author_params["properties"])
+        self.assertIn("pass", critic_params["required"])
+        self.assertIn("reason", critic_params["properties"])
+        self.assertNotIn("questions", critic_params["properties"])
+
     async def test_complete_tool_call_sends_standard_tools(self) -> None:
         original = llm.httpx.AsyncClient
         json_client = _JsonClient({

@@ -3,14 +3,14 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.integrations import llm
 from app.agents.roles.authoring import author_questions, review_pack
 from app.agents.contracts.contracts import profile_for, validate_role_output
 from app.agents.providers.governance import FAILURE_THRESHOLD, ProviderGovernor
 from app.agents.roles.intent_fusion import fuse_intent, pattern_intent
-from app.agents.roles.loop import _RoleModel, run_agent, run_team
+from app.agents.roles.loop import _RoleModel, _finish_output, run_agent, run_team
 from app.agents.roles.memory import MemoryManager
 from app.agents.providers.router import choose_provider
 from app.agents.tools.registry import check_duplicate, validate_question
@@ -213,6 +213,32 @@ class ToolRules(unittest.IsolatedAsyncioTestCase):
 
 
 class ToolLoop(unittest.IsolatedAsyncioTestCase):
+    async def test_finish_requires_matching_successful_tool_result(self) -> None:
+        """Rejected or unexecuted finish arguments must not become a role decision."""
+        calls = [
+            AIMessage(content="", tool_calls=[{"name": "finish", "args": {"text": "rejected"}, "id": "a"}]),
+            ToolMessage(content='{"success": false, "error": "tool unavailable"}', name="finish", tool_call_id="a"),
+            AIMessage(content="", tool_calls=[{"name": "finish", "args": {"text": "approved"}, "id": "b"}]),
+            ToolMessage(content='{"success": true, "final": true, "payload": {"text": "approved"}}', name="finish", tool_call_id="b"),
+        ]
+        self.assertEqual(_finish_output(calls), {"text": "approved"})
+        self.assertEqual(_finish_output(calls[:2]), {})
+        self.assertEqual(_finish_output(calls[:3]), {})
+
+    async def test_failed_finish_does_not_pass_role_boundary(self) -> None:
+        """A tool rejection cannot be laundered through valid model arguments."""
+        class Graph:
+            async def ainvoke(self, *_args, **_kwargs):
+                return {"messages": [
+                    AIMessage(content="", tool_calls=[{"name": "finish", "args": {"text": "继续"}, "id": "failed"}]),
+                    ToolMessage(content='{"success": false, "error": "tool unavailable"}', name="finish", tool_call_id="failed"),
+                ]}
+
+        with patch("app.agents.roles.loop.build_role_agent", return_value=Graph()):
+            result = await run_agent(_Db(), profile_for("interviewer"), user="追问")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "invalid_role_output")
+
     async def test_budget_error_does_not_retry_tool_call_as_json(self) -> None:
         """A hard usage limit must not trigger another model request."""
         model = _RoleModel(role="author")

@@ -163,9 +163,16 @@ def tools_for(scope: tuple[str, ...]) -> dict[str, ToolSpec]:
     return {name: TOOLS[name] for name in scope if name in TOOLS}
 
 
-def tool_schemas_for(scope: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Expose only the role's allow-listed schemas to a model provider."""
-    return [spec.schema() for spec in tools_for(scope).values()]
+def tool_schemas_for(scope: tuple[str, ...], *, role: str | None = None) -> list[dict[str, Any]]:
+    """Give finish the same fields the role output validator will require."""
+    from app.agents.contracts.contracts import ROLE_OUTPUTS
+
+    schemas = [spec.schema() for spec in tools_for(scope).values()]
+    if role in ROLE_OUTPUTS:
+        for schema in schemas:
+            if schema["function"]["name"] == "finish":
+                schema["function"]["parameters"] = ROLE_OUTPUTS[role].model_json_schema(by_alias=True)
+    return schemas
 
 
 def _shingles(text: str) -> set[str]:

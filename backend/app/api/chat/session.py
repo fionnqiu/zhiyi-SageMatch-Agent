@@ -54,18 +54,20 @@ def get_session(session_id: str, db: Session = Depends(get_db)) -> schemas.ChatS
 
 
 @router.post("/api/sessions/{session_id}/clear", response_model=schemas.ChatSessionDetail)
-def clear_session(session_id: str, db: Session = Depends(get_db)) -> schemas.ChatSessionDetail:
+def clear_session(session_id: str, request: Request, db: Session = Depends(get_db)) -> schemas.ChatSessionDetail:
     try:
-        session = services.clear_session(db, session_id)
+        session = services.clear_session(db, session_id,
+                                         checkpointer=getattr(request.app.state, "checkpointer", None))
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
     return session_detail(session)
 
 
 @router.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
+def delete_session(session_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
     try:
-        services.delete_session(db, session_id)
+        services.delete_session(db, session_id,
+                                checkpointer=getattr(request.app.state, "checkpointer", None))
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {"ok": "deleted"}

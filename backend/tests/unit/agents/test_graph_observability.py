@@ -112,6 +112,20 @@ def test_supervisor_event_persists_handoff_identity_without_task_body() -> None:
         assert payload == {"task_id": "task-1", "agent": "knowledge_qa", "attempt": 1}
 
 
+def test_supervisor_decision_persists_role_without_model_reason() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[
+        GraphRun.__table__, NodeRun.__table__, AgentEvent.__table__, ToolRun.__table__,
+    ])
+    outcome = {"run_id": "role-run", "status": "committed", "events": [{
+        "event_id": "role-choice", "node": "supervisor_decide", "event_type": "supervisor_decision",
+        "payload": {"next_role": "critic", "reason": "private candidate text"},
+    }]}
+    with Session(engine) as db:
+        persist_graph_trace(db, outcome)
+        assert db.get(AgentEvent, "role-choice").payload == {"next_role": "critic"}
+
+
 def test_tool_events_derive_from_actual_tool_run_without_arguments() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[

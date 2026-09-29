@@ -389,6 +389,11 @@ def persist_interview_answer(db: Session, interview_id: str, content: str, answe
     questions = list(interview.question_set.questions) if interview.question_set else []
     if existing is None:
         current = questions[interview.current_question_index] if interview.current_question_index < len(questions) else None
+        # Legacy/imported question sets can contain a stale relationship row.
+        # Never copy that identifier into the FK column; the answer remains
+        # durable while the next request can rebuild the question state.
+        if current is not None and hasattr(db, "get") and db.get(Question, current.id) is None:
+            current = None
         user_turn = InterviewTurn(
             id=run_id or new_id(), interview_id=interview.id, role="user",
             content=content, answer_mode=answer_mode, cite="answer_pending",
@@ -436,15 +441,15 @@ def persist_interview_answer(db: Session, interview_id: str, content: str, answe
 
     if advance and next_index < len(questions):
         next_q = questions[next_index]
-        question_id = next_q.id
+        question_id = next_q.id if not hasattr(db, "get") or db.get(Question, next_q.id) is not None else None
         fallback = f"明白。接下来进入下一题：{next_q.stem}"
     elif final_question:
         next_q = None
-        question_id = current.id if current else None
+        question_id = current.id if current and (not hasattr(db, "get") or db.get(Question, current.id) is not None) else None
         fallback = "感谢作答，本套问题已完成。你可以结束面试并生成复盘。"
     else:
         next_q = current
-        question_id = current.id if current else None
+        question_id = current.id if current and (not hasattr(db, "get") or db.get(Question, current.id) is not None) else None
         fallback = "请再补充这道题的关键依据、具体步骤或边界情况。"
 
     return AnswerProgress(interview, current, next_q, question_id, fallback, advance)

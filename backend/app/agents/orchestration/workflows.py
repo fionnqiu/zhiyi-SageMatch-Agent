@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.agents.orchestration.checkpoint import (
     CheckpointValidationError, authorize_checkpoint, checkpoint_config, derive_thread_id,
 )
-from app.agents.orchestration.graph import AgentState, StageCallback, build_application_graph
+from app.agents.orchestration.graph import AgentState, StageCallback, SupervisedRoute, build_application_graph
 from app.agents.orchestration.observability import persist_graph_trace
 from app.agents.orchestration.trace import graph_run_scope
 from app.integrations import llm
@@ -68,6 +68,7 @@ async def run_business_graph(
     deadline_at: float | None = None,
     stages: Mapping[str, StageCallback] | None = None,
     stage_sequences: Mapping[str, tuple[str, ...]] | None = None,
+    supervised_route: SupervisedRoute | None = None,
     restart_incomplete: bool = False,
     first_commit: Callable[[], Awaitable[Any]] | None = None,
     first_commit_after: str | None = None,
@@ -139,6 +140,7 @@ async def run_business_graph(
         db.commit()
     graph = build_application_graph(checkpointer=checkpointer, stages=stages,
                                     stage_sequences=stage_sequences, commit=commit,
+                                    supervised_route=supervised_route,
                                     first_commit=commit_first if first_commit else None,
                                     first_commit_after=first_commit_after)
     config = checkpoint_config(thread_id=thread_id, owner_id=ANON)
