@@ -9,6 +9,7 @@ and job context for this user.
 from __future__ import annotations
 
 import uuid
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -104,6 +105,30 @@ class MemoryManager:
     def remember_profile(self, user_id: str, patch: dict[str, Any]) -> None:
         """Merge durable facts. Later interviews can read them without re-parsing the JD."""
         self.commit_proposal(MemoryProposal(layer="profile", owner_id=user_id, scope="profile", source="application", patch=patch))
+
+    def remember_user_statement(self, text: str, *, message_id: str | None = None) -> dict[str, str]:
+        """Persist only explicit, stable self-descriptions from ordinary chat.
+
+        This intentionally uses a small deterministic allowlist instead of
+        treating every conversational sentence as durable identity data.
+        The resulting profile is then available to later sessions through
+        ``render()``.
+        """
+        patterns = {
+            "name": r"(?:我叫|我的名字是)\s*([^，。！？\n]{1,40})",
+            "role": r"(?:我是|我的职业是|我从事)\s*([^，。！？\n]{1,60})",
+            "goal": r"(?:我的目标是|我想成为|我希望)\s*([^，。！？\n]{1,80})",
+            "preference": r"(?:我喜欢|我偏好|我更喜欢)\s*([^，。！？\n]{1,80})",
+        }
+        patch = {key: match.group(1).strip() for key, pattern in patterns.items() if (match := re.search(pattern, text))}
+        if "goal" in patch:
+            patch["goal"] = patch["goal"].removeprefix("成为").strip()
+        if patch:
+            self.commit_proposal(MemoryProposal(
+                layer="profile", owner_id=self.owner_id, scope="profile", source="user_statement",
+                provenance={"message_id": message_id} if message_id else {}, patch=patch,
+            ))
+        return patch
 
     def update_episode(self, *, summary: str = "", slots: dict[str, Any] | None = None) -> None:
         if not self.scope_id:

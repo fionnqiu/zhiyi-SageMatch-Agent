@@ -82,8 +82,14 @@ async def recall_snippets(db: Session, query: str) -> list[dict[str, Any]]:
     return result["selected_chunks"]
 
 
-async def structured_recall(db: Session, query: str) -> dict[str, Any]:
-    """Return the full RAG result contract used by AgentState and API extras."""
+async def structured_recall(db: Session, query: str, *, use_adaptive: bool = True) -> dict[str, Any]:
+    """Return the full RAG result contract used by AgentState and API extras.
+
+    Args:
+        db: Database session
+        query: User query
+        use_adaptive: 是否使用自适应多阶段检索（默认 True）
+    """
     started = time.monotonic()
     cfg = get_rag_config()
     rows = (
@@ -103,6 +109,7 @@ async def structured_recall(db: Session, query: str) -> dict[str, Any]:
         }
         for chunk, mat in rows
     ]
+    # 查询改写阶段
     rewrite_provider = None
     if cfg.query_rewrite.enabled:
         rewrite_provider = lambda text: rewrite_with_provider(
@@ -118,56 +125,98 @@ async def structured_recall(db: Session, query: str) -> dict[str, Any]:
         timeout_seconds=cfg.query_rewrite.timeout_seconds,
     )
     search_queries = rewrite["search_queries"] or [query]
-    # Each rewritten phrase needs its own embedding; reusing the original vector
-    # would silently make the vector route ignore the rewrite.
+
+    # 向量化阶段
     vectors, embedding_model = await embed_or_empty(db, search_queries)
     query_vectors = vectors if len(vectors) == len(search_queries) else [None] * len(search_queries)
-    lexical: list[dict[str, Any]] = []
-    vector: list[dict[str, Any]] = []
-    async def retrieve_one(query_id: int, search_query: str, vector: list[float] | None):
-        return await asyncio.to_thread(
-            dual_retrieve, search_query, packed, query_vector=vector,
-            lexical_top_k=cfg.recall.lexical_top_k,
-            vector_top_k=cfg.recall.vector_top_k,
-            query_id=f"q{query_id}", score_floor=cfg.recall.score_floor,
+
+    # 根据配置选择检索策略
+    if use_adaptive and len(packed) > 0:
+        # 使用自适应多阶段检索
+        from app.services.materials.rag.adaptive_retrieval import AdaptiveRetrievalPipeline
+
+        pipeline = AdaptiveRetrievalPipeline(db)
+        reranker_fn = None
+        if cfg.rerank.enabled:
+            reranker_fn = lambda text, rows: rerank_with_provider(
+                text, rows, model=cfg.rerank.model,
+                base_url=cfg.rerank.base_url, timeout=cfg.rerank.timeout_seconds,
+                db=db,
+            )
+
+        # 对每个查询独立执行多阶段检索，然后聚合
+        all_candidates = []
+        for i, (search_query, query_vector) in enumerate(zip(search_queries, query_vectors)):
+            result = await pipeline.retrieve(
+                search_query,
+                packed,
+                query_vector=query_vector,
+                reranker=reranker_fn,
+            )
+            all_candidates.extend(result["candidates"])
+
+        # 去重并重新排序
+        governed = govern_candidates(
+            all_candidates,
+            max_chunks_per_material=cfg.recall.max_chunks_per_material,
+            max_materials=cfg.recall.max_materials,
+            max_candidates=cfg.recall.candidate_k,
+            merge_adjacent=cfg.recall.merge_adjacent,
         )
 
-    for left, right in await asyncio.gather(*(
-        retrieve_one(i, text, query_vectors[i - 1])
-        for i, text in enumerate(search_queries, start=1)
-    )):
-        lexical.extend(left)
-        vector.extend(right)
-    fused = fuse_candidates(
-        lexical,
-        vector,
-        strategy=cfg.recall.fusion,
-        lexical_weight=cfg.recall.lexical_weight,
-        candidate_k=cfg.recall.candidate_k,
-    )
-    governed = govern_candidates(
-        fused,
-        max_chunks_per_material=cfg.recall.max_chunks_per_material,
-        max_materials=cfg.recall.max_materials,
-        max_candidates=cfg.recall.candidate_k,
-        merge_adjacent=cfg.recall.merge_adjacent,
-    )
-    reranker = None
-    if cfg.rerank.enabled:
-        reranker = lambda text, rows: rerank_with_provider(
-            text, rows, model=cfg.rerank.model,
-            base_url=cfg.rerank.base_url, timeout=cfg.rerank.timeout_seconds,
-            db=db,
+        reranked = {
+            "candidates": governed[:cfg.recall.top_k],
+            "retrieval_status": "ok" if governed else "empty",
+            "diagnostics": {"adaptive_pipeline": True},
+        }
+    else:
+        # 使用原有的标准检索流程
+        lexical: list[dict[str, Any]] = []
+        vector: list[dict[str, Any]] = []
+        async def retrieve_one(query_id: int, search_query: str, vector: list[float] | None):
+            return await asyncio.to_thread(
+                dual_retrieve, search_query, packed, query_vector=vector,
+                lexical_top_k=cfg.recall.lexical_top_k,
+                vector_top_k=cfg.recall.vector_top_k,
+                query_id=f"q{query_id}", score_floor=cfg.recall.score_floor,
+            )
+
+        for left, right in await asyncio.gather(*(
+            retrieve_one(i, text, query_vectors[i - 1])
+            for i, text in enumerate(search_queries, start=1)
+        )):
+            lexical.extend(left)
+            vector.extend(right)
+        fused = fuse_candidates(
+            lexical,
+            vector,
+            strategy=cfg.recall.fusion,
+            lexical_weight=cfg.recall.lexical_weight,
+            candidate_k=cfg.recall.candidate_k,
         )
-    reranked = await rerank_candidates(
-        query,
-        governed,
-        reranker=reranker,
-        top_n=max(1, min(cfg.recall.top_k, cfg.rerank.top_n)),
-        batch_size=cfg.rerank.batch_size,
-        timeout_seconds=cfg.rerank.timeout_seconds,
-        fail_open=cfg.rerank.fail_open,
-    )
+        governed = govern_candidates(
+            fused,
+            max_chunks_per_material=cfg.recall.max_chunks_per_material,
+            max_materials=cfg.recall.max_materials,
+            max_candidates=cfg.recall.candidate_k,
+            merge_adjacent=cfg.recall.merge_adjacent,
+        )
+        reranker = None
+        if cfg.rerank.enabled:
+            reranker = lambda text, rows: rerank_with_provider(
+                text, rows, model=cfg.rerank.model,
+                base_url=cfg.rerank.base_url, timeout=cfg.rerank.timeout_seconds,
+                db=db,
+            )
+        reranked = await rerank_candidates(
+            query,
+            governed,
+            reranker=reranker,
+            top_n=max(1, min(cfg.recall.top_k, cfg.rerank.top_n)),
+            batch_size=cfg.rerank.batch_size,
+            timeout_seconds=cfg.rerank.timeout_seconds,
+            fail_open=cfg.rerank.fail_open,
+        )
     context = build_context(
         reranked["candidates"],
         max_chunks=min(cfg.recall.top_k, cfg.context.max_chunks),
@@ -185,25 +234,36 @@ async def structured_recall(db: Session, query: str) -> dict[str, Any]:
             "context_truncated" if context.get("diagnostics", {}).get("context_truncated") else "",
         ) if reason and reason not in {"disabled", "provider_unavailable", "empty_candidates"}
     ]
-    diagnostics = {
+
+    # 合并诊断信息（兼容标准和自适应模式）
+    base_diagnostics = {
         **rewrite_diagnostics,
         **rerank_diagnostics,
         **context.get("diagnostics", {}),
         "rewrite_status": rewrite_diagnostics.get("provider_status"),
         "rerank_status": rerank_diagnostics.get("provider_status"),
         "fallback_reasons": fallback_reasons,
-        "candidate_count": len(fused),
         "selected_count": len(selected),
-        "lexical_count": len(lexical),
-        "vector_count": len(vector),
         "embedding_model": embedding_model,
-        "retrieval_source": "dual_route",
+        "retrieval_source": "adaptive_multi_stage" if use_adaptive else "dual_route",
         "stage_latency_ms": {"total": round((time.monotonic() - started) * 1000, 2)},
     }
+
+    # 自适应模式的额外诊断信息已在 reranked["diagnostics"] 中
+    if use_adaptive and "adaptive_pipeline" in rerank_diagnostics:
+        diagnostics = base_diagnostics
+    else:
+        # 标准模式需要补充 lexical/vector 计数
+        diagnostics = {
+            **base_diagnostics,
+            "candidate_count": len(governed) if use_adaptive else len(fused),
+            "lexical_count": 0 if use_adaptive else len(lexical),
+            "vector_count": 0 if use_adaptive else len(vector),
+        }
     return {
         "original_query": query,
         "search_queries": search_queries,
-        "candidates": fused,
+        "candidates": governed if use_adaptive else fused,
         "selected_chunks": selected,
         "context_text": context["context_text"],
         "citations": [

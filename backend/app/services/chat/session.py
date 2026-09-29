@@ -534,6 +534,12 @@ async def begin_chat(
     # 用户这句话先落库。后面的模型流可以中断，刷新后仍能看到自己发过什么。
     session_id_saved = session.id
     db.commit()
+    # Capture only explicit self-descriptions before prompt construction so
+    # later sessions can use the durable profile, while arbitrary chat stays
+    # in short-term history.
+    MemoryManager(db, session_id=session.id, owner_id=session.user_id or ANON).remember_user_statement(
+        content, message_id=user_message.id if user_message is not None else None,
+    )
     # 新建会话还没进查询结果时，继续用刚写入的对象。已有会话提交后重新加载消息。
     if not created:
         reloaded = get_session(db, session_id_saved)
@@ -1005,9 +1011,36 @@ async def prepare_direct_answer(
     )
     knowledge_block = retrieval_result.context_text or "（知识库暂无命中）"
     history = _history_lines(session, 6)
+    memory = MemoryManager(db, session_id=session.id, owner_id=session.user_id or ANON).render(user_id=session.user_id or ANON)
+    memory_block = f"\n\n长期记忆：\n{memory}" if memory else ""
+    # 检测是否是关于用户自己的问题（记忆相关查询）
+    # Detect if the query is about the user themselves (memory-related query)
+    is_memory_query = any(pattern in content for pattern in [
+        "你眼中", "我是怎么样", "你对我", "你觉得我", "你认为我", "我的信息",
+        "你知道我", "你了解我", "记得我", "关于我"
+    ])
+
+    if is_memory_query and memory:
+        # 当用户问关于自己的信息时，优先从记忆回答
+        # When user asks about themselves, prioritize memory in the response
+        system_prompt = (
+            "你是面试知识助手。用户询问你对TA的了解或印象。"
+            "请根据「长期记忆」中的用户画像信息来回答，展现你记住了用户的基本情况。"
+            "如果记忆中有明确信息，直接引用；如果记忆为空或不完整，如实说明你暂时了解不多，鼓励用户多分享。"
+            "回答要自然、友好，不要生硬复述字段名。"
+        )
+    else:
+        # 普通知识问答场景
+        # Regular knowledge Q&A scenario
+        system_prompt = (
+            "你是面试知识助手。用户这一轮只是提问，直接回答。"
+            "不要生成面试题。若用户要出题或开始面试，告诉对方去模拟面试页。"
+            "每个可验证事实都要在句末引用上下文中的来源编号，例如 [S1]；不要编造来源编号。"
+        )
+
     prompt = {
-        "system": "你是面试知识助手。用户这一轮只是提问，直接回答。不要生成面试题。若用户要出题或开始面试，告诉对方去模拟面试页。每个可验证事实都要在句末引用上下文中的来源编号，例如 [S1]；不要编造来源编号。",
-        "user": f"知识片段：\n{knowledge_block}\n\n最近对话：\n{history}\n\n用户：{content}",
+        "system": system_prompt,
+        "user": f"知识片段：\n{knowledge_block}{memory_block}\n\n最近对话：\n{history}\n\n用户：{content}",
         "fallback": "这一轮先按知识问题回答；模型暂时不可用。你可以稍后再问，或明确说出要准备的岗位。",
     }
     extra = {
@@ -1045,9 +1078,36 @@ async def prepare_followup(
     else:
         knowledge_block = retrieval.get("context_text") or "（知识库暂无命中）"
     history = _history_lines(session, 8)
+    memory = MemoryManager(db, session_id=session.id, owner_id=session.user_id or ANON).render(user_id=session.user_id or ANON)
+    memory_block = f"\n\n长期记忆：\n{memory}" if memory else ""
+
+    # 检测是否是关于用户自己的问题（记忆相关查询）
+    # Detect if the query is about the user themselves (memory-related query)
+    is_memory_query = any(pattern in content for pattern in [
+        "你眼中", "我是怎么样", "你对我", "你觉得我", "你认为我", "我的信息",
+        "你知道我", "你了解我", "记得我", "关于我"
+    ])
+
+    if is_memory_query and memory:
+        # 当用户问关于自己的信息时，优先从记忆回答
+        # When user asks about themselves, prioritize memory in the response
+        system_prompt = (
+            "你是模拟面试训练助手。用户询问你对TA的了解或印象。"
+            "请根据「长期记忆」中的用户画像信息来回答，展现你记住了用户的基本情况。"
+            "如果记忆中有明确信息，直接引用；如果记忆为空或不完整，如实说明你暂时了解不多，鼓励用户多分享。"
+            "回答要自然、友好，不要生硬复述字段名。"
+        )
+    else:
+        # 普通追问场景
+        # Regular follow-up scenario
+        system_prompt = (
+            "你是模拟面试训练助手。回答用户对题目或岗位知识的追问。"
+            "不要重新出一整套题。不要使用「对弈」「博弈」「棋」等字眼。"
+        )
+
     prompt = {
-        "system": "你是模拟面试训练助手。回答用户对题目或岗位知识的追问。不要重新出一整套题。不要使用「对弈」「博弈」「棋」等字眼。",
-        "user": f"已有题目：\n{stems}\n\n知识片段：\n{knowledge_block}\n\n最近对话：\n{history}\n\n用户：{content}",
+        "system": system_prompt,
+        "user": f"已有题目：\n{stems}\n\n知识片段：\n{knowledge_block}{memory_block}\n\n最近对话：\n{history}\n\n用户：{content}",
         "fallback": "这套题目已经生成。你可以追问某一题在考什么，或直接发起模拟面试。",
     }
     extra = {

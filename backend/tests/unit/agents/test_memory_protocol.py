@@ -40,6 +40,15 @@ def test_profile_proposal_commits_metadata_and_version(db):
     assert memory.profile("alice") == {"role": "developer"}
 
 
+def test_explicit_user_statement_becomes_durable_profile(db):
+    memory = MemoryManager(db, owner_id="alice")
+
+    captured = memory.remember_user_statement("我叫小七，我是一名后端工程师，我希望成为架构师", message_id="m1")
+
+    assert captured == {"name": "小七", "role": "一名后端工程师", "goal": "架构师"}
+    assert memory.profile("alice") == captured
+
+
 def test_episode_rejects_foreign_owner_and_expires(db):
     memory = MemoryManager(db, interview_id="iv1", owner_id="alice")
     foreign = MemoryProposal(layer="episode", owner_id="bob", scope="interview", source="summary", summary="foreign")
