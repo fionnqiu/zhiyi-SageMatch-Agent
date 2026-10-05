@@ -6,7 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app/backend
 
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# PIP_INDEX_URL lets the deployment build pull wheels from a region-local mirror
+# (Aliyun VPC-internal PyPI on ECS); the default keeps pypi.org for CI/overseas builds.
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" -r requirements.txt
 
 COPY app ./app
 COPY config ./config
