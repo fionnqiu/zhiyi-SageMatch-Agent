@@ -774,7 +774,7 @@ function HomeState({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
         >
-          <h1 className="text-[32px] font-semibold tracking-tight">你好，小七</h1>
+          <h1 className="text-[32px] font-semibold tracking-tight">你好，我是知弈</h1>
           <p className="text-[15px] text-mute">请向我提问</p>
         </motion.div>
         <motion.div layoutId="composer" transition={SPRING_LAYOUT} className="w-full">
