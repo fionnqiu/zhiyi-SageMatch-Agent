@@ -11,6 +11,27 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
+class _NullMemoryManager:
+    """Stub for the chat-service MemoryManager used by these route/retrieval tests.
+
+    The real manager queries persisted memory tables, but these tests inject
+    lightweight fakes instead of a database session, so the memory layer is
+    stubbed out entirely. Keeping the stub here lets each test patch
+    ``app.services.chat.session.MemoryManager`` and assert only routing/RAG
+    behaviour without coupling to the memory persistence contract.
+    """
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def render(self, *_args, **_kwargs):
+        # Empty string -> session code skips the memory block injection.
+        return ""
+
+    def remember_user_statement(self, *_args, **_kwargs):
+        return None
+
+
 class RequestContextContract(unittest.TestCase):
     def test_request_context_carries_stable_turn_identity_and_route(self) -> None:
         """A request context gives API and graph nodes the same typed identifiers."""
@@ -59,11 +80,16 @@ class KnowledgeQADefaultRetrieval(unittest.IsolatedAsyncioTestCase):
         """The selected route, rather than the legacy perception flag, owns RAG."""
         from app.services.chat.session import prepare_direct_answer
 
-        session = SimpleNamespace(messages=[])
+        # MemoryManager constructor reads session.id/user_id at the call site,
+        # so the fake must expose both even though the manager itself is stubbed.
+        session = SimpleNamespace(id="session-kqa", user_id="local-user", messages=[])
         hits = [{"filename": "缓存说明", "text": "热点 key 失效后并发回源。"}]
         intent = {"intent": "answer", "route": "knowledge_qa", "needs_recall": False, "todos": []}
 
-        with patch("app.services.chat.session.recall_snippets", new=AsyncMock(return_value=hits)) as recall:
+        with (
+            patch("app.services.chat.session.recall_snippets", new=AsyncMock(return_value=hits)) as recall,
+            patch("app.services.chat.session.MemoryManager", _NullMemoryManager),
+        ):
             prompt, extra = await prepare_direct_answer(
                 object(), session, "什么是缓存击穿？", intent
             )
@@ -90,12 +116,15 @@ class RouteReuseContract(unittest.IsolatedAsyncioTestCase):
             "needs_recall": False,
             "todos": [],
         }
-        fake_session = SimpleNamespace(id="session-test", messages=[])
+        # user_id mirrors the ORM default ("local-user", the ANON identity) so
+        # begin_chat's memory hook and the ownership check behave like production.
+        fake_session = SimpleNamespace(id="session-test", user_id="local-user", messages=[])
         with (
             patch("app.services.chat.session.get_session", return_value=None),
             patch("app.services.chat.session.latest_question_set_for_session", return_value=None),
             patch("app.services.chat.session.ChatSession", return_value=fake_session),
             patch("app.services.chat.session.ChatMessage"),
+            patch("app.services.chat.session.MemoryManager", _NullMemoryManager),
             patch("app.services.chat.session.resolve_intent", new=AsyncMock(return_value=decision)) as route,
             patch("app.services.chat.session.prepare_direct_answer", new=AsyncMock(return_value=({"system": "s", "user": "u", "fallback": "f"}, {"kind": "answer"}))),
             patch("app.services.chat.session.now", return_value=None),

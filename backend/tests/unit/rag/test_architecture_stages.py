@@ -41,10 +41,23 @@ def test_knowledge_answer_retrieves_even_when_legacy_flag_is_false() -> None:
     from app.services.chat.session import prepare_direct_answer
 
     db = SimpleNamespace()
-    session = SimpleNamespace(messages=[])
+    # prepare_direct_answer now renders long-term memory through MemoryManager,
+    # which reads session.id/user_id and queries the db; the fake session carries
+    # the identity fields and the manager is stubbed for this retrieval-only test.
+    session = SimpleNamespace(id="session-rag", user_id="local-user", messages=[])
     hits = [{"chunk_id": "c1", "material_id": "m1", "filename": "x.md", "ordinal": 1, "text": "命中"}]
 
-    with patch("app.services.chat.session.recall_snippets", new=AsyncMock(return_value=hits)) as recall:
+    class _NullMemoryManager:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def render(self, *_args, **_kwargs):
+            return ""
+
+    with (
+        patch("app.services.chat.session.recall_snippets", new=AsyncMock(return_value=hits)) as recall,
+        patch("app.services.chat.session.MemoryManager", _NullMemoryManager),
+    ):
         prompt, extra = asyncio.run(prepare_direct_answer(
             db,
             session,
