@@ -5,6 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>知弈</title>
     <link rel="icon" type="image/png" href="/generated/sagematch-logo-option-2.png" />
+    <script>
+      /*
+       * 首帧前落主题。这段同步脚本早于 Vite 注入的样式表和 module 入口执行，
+       * 所以默认浅色的新访客第一眼就是浅色，不会先闪一帧深色再切回来。
+       * 判定顺序必须与 src/lib/appearance/theme.ts 的 readTheme() 保持一致：
+       * 只有显式存过 "dark" 才用深色，其余情况一律浅色。
+       */
+      (function () {
+        var mode = "light";
+        try {
+          if (localStorage.getItem("sagematch-theme") === "dark") mode = "dark";
+        } catch (error) {
+          // 隐私模式读不到存储：保持默认浅色，与 readTheme() 的兜底一致。
+        }
+        document.documentElement.dataset.theme = mode;
+        document.documentElement.style.colorScheme = mode;
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
