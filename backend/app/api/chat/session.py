@@ -374,10 +374,19 @@ async def _detached_turn_events(turn: dict, *, fallback: bool = False, checkpoin
                     return {"diagnostics": {"citation_valid": (prepared["citation_validation"] or {}).get("valid")}}
 
                 async def repair_once(_state) -> dict:
+                    streamed_reply = prepared["reply"]
                     prepared["reply"], prepared["extra"] = await services.repair_stream_answer(
                         own, worker_turn, prepared["reply"], prepared["extra"],
                         prepared.get("citation_validation"),
                     )
+                    if prepared["reply"] != streamed_reply:
+                        # Citation repair runs after provider streaming. Replay the
+                        # corrected answer through the same transient channel so
+                        # the visible bubble and the durable `done` payload agree.
+                        async def correction() -> AsyncIterator[str]:
+                            yield _sse({"type": "reset", "run_id": worker_turn["run_id"]})
+                            yield _sse({"type": "delta", "text": prepared["reply"], "run_id": worker_turn["run_id"]})
+                        await emit(correction())
                     return {"result": {"valid": True, "answer_ready": True}}
 
                 async def commit() -> bool:

@@ -87,6 +87,31 @@ test("a response header recovers a chat stream lost before its first frame", asy
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("reconnects when an SSE connection stays open without producing frames", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    if (calls.length === 1) {
+      // Keep the first response half-open after advertising its run id. A real
+      // proxy can leave this reader pending forever when the worker stops
+      // emitting frames, so the client must use its idle watchdog.
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("id: idle-run:1\n\n"));
+        },
+      }), { headers: { "X-Run-ID": "idle-run" } });
+    }
+    return stream(["id: idle-run:2\ndata: {\"type\":\"done\"}\n\n"]);
+  };
+  try {
+    const events = [];
+    await readEventStream("/api/chat/stream", {}, (event) => events.push(event.type), undefined, undefined, false, 10);
+    assert.deepEqual(events, ["done"]);
+    assert.equal(calls[1].url, "/api/streams/idle-run/events");
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("a consumer exception propagates without replaying the event", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

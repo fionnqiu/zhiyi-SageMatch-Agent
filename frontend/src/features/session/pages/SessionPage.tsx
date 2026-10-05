@@ -775,7 +775,7 @@ function HomeState({
           transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
         >
           <h1 className="text-[32px] font-semibold tracking-tight">你好，小七</h1>
-          <p className="text-[15px] text-mute">问一个知识点，或去模拟面试页准备一场面试</p>
+          <p className="text-[15px] text-mute">请向我提问</p>
         </motion.div>
         <motion.div layoutId="composer" transition={SPRING_LAYOUT} className="w-full">
           <Composer
@@ -796,7 +796,7 @@ function HomeState({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
         >
-          <Chip icon={<FileText size={13} />} label="解释一个知识点" onClick={() => onChip("ask")} />
+          <Chip icon={<FileText size={13} />} label="解释一下" onClick={() => onChip("ask")} />
           <Chip icon={<Mic size={13} />} label="去生成面试" onClick={() => onChip("interview")} />
         </motion.div>
         <motion.p

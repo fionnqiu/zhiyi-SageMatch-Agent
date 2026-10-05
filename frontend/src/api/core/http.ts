@@ -51,6 +51,7 @@ export async function readEventStream(
   signal?: AbortSignal,
   headers?: Record<string, string>,
   retryInitial = false,
+  idleTimeoutMs = 30_000,
 ): Promise<void> {
   let runId = "";
   let lastId = "";
@@ -104,7 +105,19 @@ export async function readEventStream(
     };
     try {
       while (!terminal) {
-        const chunk = await reader.read();
+        // A half-open proxy/worker connection can leave read() pending forever.
+        // Bound each wait so replay recovery gets a chance to take over and the
+        // UI cannot remain stuck in its busy state indefinitely.
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const idleTimeout = new Promise<never>((_, reject) => {
+          idleTimer = setTimeout(() => reject(new Error("SSE idle timeout")), idleTimeoutMs);
+        });
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await Promise.race([reader.read(), idleTimeout]);
+        } finally {
+          if (idleTimer !== undefined) clearTimeout(idleTimer);
+        }
         if (chunk.done) break;
         buffer += decoder.decode(chunk.value, { stream: true });
         buffer = buffer.replace(/\r\n/g, "\n");

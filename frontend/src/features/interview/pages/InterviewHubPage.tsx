@@ -110,7 +110,6 @@ export function InterviewHubPage() {
       <div className="min-h-0 flex-1 space-y-[22px] overflow-y-auto px-8 py-7">
         <div className="space-y-1.5">
           <h1 className="text-2xl font-bold">模拟面试</h1>
-          <p className="text-[13px] text-mute">选择目标场次开始实战，或查阅历史场次的面试报告</p>
         </div>
         {live ? (
           <div className="flex items-center justify-between gap-5 rounded-[14px] border border-forest-2/40 bg-card-live p-5">
