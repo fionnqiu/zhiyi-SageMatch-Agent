@@ -80,17 +80,6 @@ export function InterviewReportPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={regenerate}
-            disabled={regenerating || !interview}
-            aria-busy={regenerating}
-            /* Regeneration is recoverable maintenance work, so it remains secondary to exporting. */
-            className="apple-button apple-button--secondary apple-button--sm flex items-center gap-1.5 rounded-lg border border-mint-3/50 bg-mint-3/10 px-4 py-2 text-xs text-mint-2 disabled:cursor-wait disabled:opacity-60"
-          >
-            <RefreshCw size={14} className={regenerating ? "animate-spin" : ""} />
-            {regenerating ? "重新生成中…" : "重新生成复盘（测试）"}
-          </button>
           <button onClick={() => id && api.downloadReport(id)} className="apple-button apple-button--outline apple-button--sm flex items-center gap-1.5 rounded-lg border border-line-strong bg-row px-4 py-2 text-xs">
             <Upload size={14} className="text-mute" />
             导出复盘报告 ↗
