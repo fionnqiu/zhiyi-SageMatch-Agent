@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, RefreshCw, Sparkles, Upload } from "lucide-react";
+import { ArrowLeft, Sparkles, Upload } from "lucide-react";
 import { api, type Interview } from "../../../api";
 
 const dimensionLabels: Record<string, string> = {
@@ -20,9 +20,6 @@ export function InterviewReportPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [interview, setInterview] = useState<Interview | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
-  const [regenerating, setRegenerating] = useState(false);
-  const [regenerateError, setRegenerateError] = useState("");
 
   useEffect(() => {
     if (!id) return;
@@ -43,24 +40,7 @@ export function InterviewReportPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [id, reloadToken]);
-
-  async function regenerate() {
-    if (!id || regenerating) return;
-    setRegenerating(true);
-    setRegenerateError("");
-    try {
-      const next = await api.regenerateReport(id);
-      setInterview(next);
-      // The response intentionally has no report. Restart the existing polling
-      // effect so the page observes the newly queued result.
-      setReloadToken((value) => value + 1);
-    } catch (error) {
-      setRegenerateError(error instanceof Error ? error.message : "重新生成复盘失败");
-    } finally {
-      setRegenerating(false);
-    }
-  }
+  }, [id]);
 
   const report = interview?.report;
   const score = report?.score ?? 0;
@@ -86,12 +66,6 @@ export function InterviewReportPage() {
           </button>
         </div>
       </header>
-
-      {regenerateError ? (
-        <div role="alert" className="border-b border-red-400/30 bg-red-500/10 px-6 py-2 text-xs text-red-200">
-          {regenerateError}
-        </div>
-      ) : null}
 
       <div className="min-h-0 flex-1 space-y-[18px] overflow-y-auto px-8 py-[22px]">
         {/* Return navigation is intentionally quiet so the score and report remain the visual focus. */}
